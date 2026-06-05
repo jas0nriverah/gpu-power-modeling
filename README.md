@@ -2,10 +2,6 @@
 
 **Predict server/accelerator power (watts) from public telemetry using a reproducible ML engineering workflow.**
 
-> **30-second summary:** This project loads synthetic or public BMC telemetry, trains baseline regressors (linear, random forest, gradient boosting), and evaluates them with **grouped session cross-validation** so metrics reflect real deployment on unseen trace files—not optimistic random row splits. It includes leakage audits, ablations, diagnostics, and auto-generated experiment reports.
-
----
-
 ## Problem
 
 Data centers and ML clusters need to estimate power from utilization, clocks, and temperature signals—for scheduling, thermal management, and energy budgeting. This repo builds a **small but rigorous** regression pipeline that predicts `power_watts` from those telemetry features.
