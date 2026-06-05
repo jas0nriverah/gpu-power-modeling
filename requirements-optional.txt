@@ -1,0 +1,2 @@
+# Optional extras for expanded experiments
+torch>=2.2

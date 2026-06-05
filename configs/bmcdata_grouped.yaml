@@ -1,0 +1,37 @@
+# Public BMC traces with leakage-aware grouped validation.
+# Run with: python -m gpu_power_pipeline run --config configs/bmcdata_grouped.yaml
+name: bmcdata_grouped
+random_state: 42
+outdir: outputs/bmcdata_grouped
+registry_dir: artifacts
+
+data:
+  source: bmcdata_public
+  bmcdata_dir: data/bmcdata_public
+  bmcdata_max_files: 4
+
+split:
+  strategy: grouped
+  test_size: 0.2
+  cv_folds: 3
+
+models:
+  include_mlp: false
+  include_torch_mlp: false
+  params: {}
+
+experiments:
+  run_ablation: true
+  run_sweep: true
+  run_validation: true
+  generate_report: true
+
+sweep_space:
+  random_forest:
+    n_estimators: [120, 220]
+    max_depth: [8, 14]
+    min_samples_leaf: [1, 2]
+  gradient_boosting:
+    n_estimators: [120, 220]
+    learning_rate: [0.03, 0.05]
+    max_depth: [2, 3]

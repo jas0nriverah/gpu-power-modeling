@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpu-power-modeling"
+version = "0.1.0"
+description = "Leakage-aware power modeling pipeline with public telemetry and grouped session validation."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Portfolio Project" }]
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "scikit-learn>=1.3",
+    "matplotlib>=3.7",
+    "joblib>=1.3",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "httpx>=0.27",
+]
+torch = ["torch>=2.2"]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.5",
+    "httpx>=0.27",
+    "fastapi>=0.110",
+]
+
+[project.scripts]
+gpu-power-pipeline = "gpu_power_pipeline.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B"]

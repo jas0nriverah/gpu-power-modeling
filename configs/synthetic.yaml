@@ -1,0 +1,26 @@
+# Synthetic baseline experiment.
+# Run with: python -m gpu_power_pipeline run --config configs/synthetic.yaml
+name: synthetic_baseline
+random_state: 42
+outdir: outputs/synthetic
+registry_dir: artifacts
+
+data:
+  source: synthetic
+  n_samples: 12000
+
+split:
+  strategy: time
+  test_size: 0.2
+  cv_folds: 3
+
+models:
+  include_mlp: false
+  include_torch_mlp: false
+  params: {}
+
+experiments:
+  run_ablation: true
+  run_sweep: false
+  run_validation: true
+  generate_report: true

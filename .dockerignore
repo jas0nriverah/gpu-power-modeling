@@ -1,0 +1,15 @@
+.git/
+.gitignore
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+outputs/
+outputs_*/
+ci_outputs/
+data/bmcdata_public/
+tests/
+docs/
+*.md
+!README.md

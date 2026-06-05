@@ -1,0 +1,4 @@
+# Inference service dependencies (FastAPI app + tests).
+fastapi>=0.110
+uvicorn[standard]>=0.27
+httpx>=0.27

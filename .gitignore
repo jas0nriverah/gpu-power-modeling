@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+outputs/
+outputs_*/
+ci_outputs/
+data/bmcdata_public/
+
+# Keep the registry folder but not trained model blobs.
+artifacts/*
+!artifacts/.gitkeep
