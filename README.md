@@ -232,9 +232,6 @@ Each run writes to `--outdir`:
 
 **How this is deployed (and would scale):** The repo implements the offline→online path: train on historical traces → persist a versioned model bundle (`joblib` + metadata) → serve predictions via a FastAPI `/predict` endpoint, containerized with Docker. To scale, partition training on `session_id`, version artifacts per hardware generation in the registry, add batch/async inference, and monitor drift using grouped-holdout-style shadow metrics.
 
-## How I would explain this in an interview
-
-> "I built an end-to-end power prediction pipeline from public server telemetry. The interesting part isn't the model—it's the evaluation. I enforce grouped cross-validation by trace session so we don't leak temporal structure, run automated leakage audits, and treat random-split metrics as optimistic diagnostics only. The pipeline outputs reproducible artifacts—metrics, residual plots, ablations, and a one-page report—so results are auditable. On real public data, grouped CV is much harder than synthetic data, which led me to add target-quality checks and document limitations instead of cherry-picking metrics."
 
 ## Future work
 
