@@ -4,19 +4,19 @@
 
 ## Summary
 
-- **What it does:** trains regression models that estimate `power_watts` from utilization, clock, temperature, and workload telemetry.
-- **Why it matters:** power estimates are useful for capacity planning, scheduling, thermal analysis, and energy budgeting.
-- **What makes it credible:** public-safe data modes, dataset quality checks, leakage filtering, grouped validation, saved artifacts, inference serving, and drift checks.
-- **How to run it:** install the package, run a synthetic experiment, then train or serve a saved model.
-- **Honest limitation:** public real traces are noisy and shift across sessions, so grouped CV is the metric to trust even when it is negative.
+- **What it does:** predicts `power_watts` from GPU telemetry (utilization, clocks, temperature, workload labels).
+- **Why it matters:** power estimates help with capacity planning, scheduling, and thermal analysis.
+- **What makes it credible:** public data only, dataset checks, leakage filtering, grouped validation, saved models, API serving, and drift checks.
+- **How to run:** install, run a synthetic experiment, then train or serve a saved model.
+- **Limitation:** real public traces are noisy. Grouped CV is the metric to trust, even when R² is negative.
 
 ## Problem
 
-Data centers and ML clusters need power estimates from utilization, clocks, and temperature signals. This repo predicts `power_watts` from public or synthetic telemetry and keeps validation explicit.
+Clusters need power estimates from utilization, clocks, and temperature. This repo predicts `power_watts` from public or synthetic telemetry with clear validation.
 
 ## Motivation
 
-Row-level random splits can inflate telemetry results because nearby rows from the same trace are highly correlated. This project uses leakage checks, grouped/session validation, and dataset reports to keep results honest.
+Random row splits can look good on telemetry data because rows from the same trace are similar. This project uses grouped validation and dataset checks to keep results honest.
 
 ## Data modes
 
@@ -28,11 +28,11 @@ Row-level random splits can inflate telemetry results because nearby rows from t
 | `mit_supercloud` | Real public NVIDIA GPU telemetry | [MIT Supercloud HPCA22](https://github.com/boringlee24/HPCA22_SuperCloud) | Manual `dcgm.csv` or `nvidia_smi.csv` path; includes GPU utilization and power draw |
 | `nrel_eagle` | Real public trace | [NREL HPC Eagle](https://data.nrel.gov/submissions/301) | Manual CSV path for public long-format GPU metrics |
 
-All data is **public or synthetic**. No proprietary datasets, internal architecture assumptions, or confidential workflows.
+All data is **public or synthetic**. No proprietary datasets or confidential workflows.
 
-The loaders normalize each source into a common schema: `power_watts`, optional `timestamp`, optional `session_id`, and telemetry features such as utilization, clocks, temperature, and workload labels. Synthetic data tests the pipeline. Real public traces are the only data used for real-world claims.
+Each loader maps raw data to a shared schema: `power_watts`, optional `timestamp`, optional `session_id`, plus utilization, clocks, temperature, and workload fields. Use synthetic data to test the pipeline. Use real public traces for real-world claims.
 
-Derived outputs such as predictions, residuals, feature summaries, reference profiles, and drift reports are **calculated artifacts**. They should not be treated as measured power traces.
+Predictions, residuals, drift reports, and similar outputs are **calculated artifacts**, not measured power traces.
 
 ## Architecture
 
@@ -63,14 +63,14 @@ You can also run it directly:
 gpu-power-pipeline data-summary --source synthetic --n-samples 600 --outdir dataset_report
 ```
 
-The report checks required normalized columns, recommended telemetry columns, rough unit ranges, row count, source type, and whether `session_id` groups are suitable for grouped validation. It warns when data is too small, synthetic-only, missing key columns, outside expected units, or not ready for grouped holdout.
+The report checks columns, units, row count, and whether grouped validation is possible. It warns when data is too small, missing key fields, or not ready for session holdout.
 
 ## Modeling approach
 
 1. **Features:** GPU/system utilization, clocks, temperature, workload labels (when available)
 2. **Preprocessing:** median imputation + `StandardScaler` for numeric; one-hot encoding for categorical
-3. **Models:** Linear Regression, Random Forest, Gradient Boosting (+ optional sklearn/PyTorch MLP)
-4. **Diagnostics:** MAE / RMSE / R², residual bias/std/p95, permutation importance, worst-error rows
+3. **Models:** Linear Regression, Random Forest, Gradient Boosting (+ optional MLP, XGBoost, LightGBM)
+4. **Diagnostics:** MAE / RMSE / R², residual bias/std/p95, permutation importance, SHAP summaries, worst-error rows
 
 ## Validation strategy
 
@@ -145,6 +145,7 @@ gpu-power-pipeline run ...        # or: python -m gpu_power_pipeline run ...
 | `train` | Fit the best (or `--model-name`) model on all data and save a versioned bundle |
 | `evaluate` | Train + evaluate and write `metrics.csv` only |
 | `data-summary` | Summarize dataset schema, units, and grouped-validation suitability |
+| `optional-status` | Show optional package availability for boosted models and tracking |
 | `predict` | Load a saved model and predict on a CSV/JSON of telemetry |
 | `monitor` | Compare new prediction inputs with training/reference feature distributions |
 | `serve` | Launch the FastAPI inference service |
@@ -224,7 +225,34 @@ python -m pytest -q
 ruff check src tests
 ```
 
-Optional PyTorch MLP: `pip install -r requirements-optional.txt` then add `--include-torch-mlp`.
+**Optional features (off by default):**
+
+Install extras first:
+
+```bash
+pip install -r requirements-optional.txt
+gpu-power-pipeline optional-status   # check what is installed
+```
+
+| Flag | What it adds |
+|------|--------------|
+| `--include-xgboost` | XGBoost regressor in model comparison |
+| `--include-lightgbm` | LightGBM regressor in model comparison |
+| `--run-shap` | Mean absolute SHAP values for tree models (RF, GB, XGBoost, LightGBM) |
+| `--track-mlflow` | Log params, metrics, and artifacts to local `mlruns/` |
+| `--track-wandb` | Log to W&B (defaults to offline mode) |
+
+Full example:
+
+```bash
+gpu-power-pipeline run --source synthetic --n-samples 12000 \
+  --include-xgboost --include-lightgbm --run-shap \
+  --track-mlflow --track-wandb --outdir outputs_optional
+```
+
+Or use the template config: `gpu-power-pipeline run --config configs/optional_boosting_tracking.yaml`.
+
+These extras are optional so the default install stays small. Compare boosted models with the same grouped validation as the built-in models.
 
 ## Model persistence & artifact registry
 
@@ -251,7 +279,7 @@ The project includes a lightweight monitoring path that stays local and determin
 - the FastAPI service can log predictions when `GPU_POWER_PREDICTION_LOG` is set
 - `gpu-power-pipeline monitor` writes `drift_report.csv` and `monitoring_report.md`
 
-The drift check compares incoming features with the training/reference profile. It flags missing expected columns, non-numeric values in numeric features, small input batches, shifted numeric means, values outside reference ranges, and unseen categorical values. It does not claim statistical production monitoring. It is a compact demo of the checks I would put around a tabular model before trusting new inputs.
+The drift check compares new inputs to the training profile. It flags missing columns, bad numeric values, small batches, shifted means, out-of-range values, and unseen categories. This is a lightweight local check, not full production monitoring.
 
 ## Inference API (FastAPI)
 
@@ -297,12 +325,14 @@ gpu-power-modeling/
 │   ├── quality.py        # target distribution checks
 │   ├── report.py         # one-page markdown report
 │   ├── monitoring.py     # reference profiles, drift checks, prediction logs
+│   ├── explainability.py # optional SHAP summaries for tree models
+│   ├── tracking.py       # optional MLflow / W&B logging
 │   ├── plotting.py       # diagnostic figures
 │   ├── config.py         # YAML experiment config + defaults
 │   ├── persistence.py    # joblib model bundles + versioned registry
 │   ├── inference.py      # load model, align input, predict
 │   ├── api.py            # FastAPI inference service
-│   └── cli.py            # subcommands: run/train/evaluate/data-summary/predict/monitor/serve
+│   └── cli.py            # CLI subcommands
 ├── configs/              # YAML experiment configs
 ├── tests/                # data, preprocessing, persistence, inference, api, ...
 ├── .github/workflows/ci.yml   # lint + tests + train/predict smoke
@@ -320,20 +350,23 @@ Each run writes to `--outdir`:
 - `metrics.csv`, `run_metadata.json`, `dataset_preview.csv`
 - `data/`, `audit/`, `quality/`, per-model plots and importance CSVs
 - `monitoring/reference_profile.json`
+- per-model SHAP summaries when `--run-shap` is enabled
 - `validation/grouped_blocked_cv_summary.csv` (when `--run-validation`)
 - `ONE_PAGE_REPORT.md` (when `--generate-report`)
 
 ## Design Notes
 
-**Why these models?** Linear regression is a fast, interpretable baseline. Tree ensembles (RF, GB) capture nonlinear util/temp interactions common in hardware telemetry without requiring GPU training infrastructure.
+**Why these models?** Linear regression is fast and easy to read. Random Forest and Gradient Boosting handle nonlinear util/temp patterns without GPU training.
 
-**Why grouped validation?** Telemetry rows within the same trace file are temporally correlated. Random splits let the model memorize session-specific patterns. Holding out whole `session_id` groups approximates deploying on **new captures**.
+**Why optional boosted models?** XGBoost and LightGBM are strong tabular models, but they add heavy dependencies. They stay optional and use the same grouped validation as built-in models.
 
-**How leakage was avoided:** Features with power/energy names or near-perfect target correlation are removed before training. Splits respect time and session boundaries. An automated audit flags remaining risks.
+**Why grouped validation?** Rows from the same trace are similar. Random splits let the model memorize a session. Holding out whole `session_id` groups tests performance on new captures.
 
-**What the model does well / poorly:** On synthetic data with known relationships, baselines produce strong secondary metrics. On heterogeneous public BMC sessions, grouped CV degrades sharply. That points to distribution shift, weak labels, and data-quality limits.
+**How leakage was avoided:** Drop power/energy feature names and near-perfect target correlations. Splits respect time and session boundaries. An audit flags remaining risks.
 
-**How this is deployed (and would scale):** The repo implements the offline to online path: train on historical traces, persist a versioned model bundle (`joblib` + metadata), and serve predictions via a FastAPI `/predict` endpoint, containerized with Docker. To scale, partition training on `session_id`, version artifacts per hardware generation in the registry, add batch/async inference, and monitor drift using grouped-holdout-style shadow metrics.
+**What works / what does not:** Synthetic data gives strong metrics. Public BMC sessions are harder; grouped CV can go negative due to distribution shift and noisy labels.
+
+**Deployment path:** Train on traces, save a versioned model bundle, serve via FastAPI, containerize with Docker. To scale: train per hardware generation, add batch inference, and monitor drift on new sessions.
 
 ## Adding Public Trace Data
 
@@ -351,7 +384,7 @@ Do not mix synthetic, public real-trace, and derived prediction data in the same
 
 ## Future work
 
-See [ROADMAP.md](ROADMAP.md). Next steps: experiment tracking (MLflow/W&B), batch/async inference, optional gradient-boosting libraries (XGBoost/LightGBM) with SHAP, richer workload labeling for public traces, and stronger monitoring once larger real datasets are available.
+See [ROADMAP.md](ROADMAP.md). Next steps: pin a demo run bundle under `examples/`, batch/async inference, richer workload labels for public traces, and stronger monitoring on larger real datasets.
 
 ## License
 

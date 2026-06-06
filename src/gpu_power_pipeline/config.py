@@ -54,6 +54,8 @@ class SplitConfig:
 class ModelConfig:
     include_mlp: bool = False
     include_torch_mlp: bool = False
+    include_xgboost: bool = False
+    include_lightgbm: bool = False
     params: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
@@ -63,6 +65,17 @@ class ExperimentToggles:
     run_sweep: bool = False
     run_validation: bool = False
     generate_report: bool = False
+    run_shap: bool = False
+    track_mlflow: bool = False
+    track_wandb: bool = False
+
+
+@dataclass
+class TrackingConfig:
+    mlflow_tracking_uri: str = "mlruns"
+    mlflow_experiment_name: str = "gpu-power-modeling"
+    wandb_project: str = "gpu-power-modeling"
+    wandb_mode: str = "offline"
 
 
 @dataclass
@@ -77,6 +90,7 @@ class ExperimentConfig:
     split: SplitConfig = field(default_factory=SplitConfig)
     models: ModelConfig = field(default_factory=ModelConfig)
     experiments: ExperimentToggles = field(default_factory=ExperimentToggles)
+    tracking: TrackingConfig = field(default_factory=TrackingConfig)
     sweep_space: Dict[str, Dict[str, List[Any]]] = field(
         default_factory=lambda: {k: dict(v) for k, v in DEFAULT_SWEEP_SPACE.items()}
     )
@@ -93,6 +107,7 @@ class ExperimentConfig:
             split=SplitConfig(**(data.get("split") or {})),
             models=ModelConfig(**(data.get("models") or {})),
             experiments=ExperimentToggles(**(data.get("experiments") or {})),
+            tracking=TrackingConfig(**(data.get("tracking") or {})),
             sweep_space=data.get("sweep_space") or {k: dict(v) for k, v in DEFAULT_SWEEP_SPACE.items()},
         )
 

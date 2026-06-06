@@ -28,6 +28,28 @@ def test_from_dict_partial_override():
     assert config.random_state == 42
 
 
+def test_optional_experiment_flags_from_dict():
+    config = ExperimentConfig.from_dict(
+        {
+            "models": {"include_xgboost": True, "include_lightgbm": True},
+            "experiments": {"run_shap": True, "track_mlflow": True, "track_wandb": True},
+            "tracking": {
+                "mlflow_tracking_uri": "file:mlruns",
+                "mlflow_experiment_name": "power-tests",
+                "wandb_project": "power-tests",
+                "wandb_mode": "offline",
+            },
+        }
+    )
+    assert config.models.include_xgboost is True
+    assert config.models.include_lightgbm is True
+    assert config.experiments.run_shap is True
+    assert config.experiments.track_mlflow is True
+    assert config.experiments.track_wandb is True
+    assert config.tracking.mlflow_experiment_name == "power-tests"
+    assert config.tracking.wandb_mode == "offline"
+
+
 def test_from_yaml_roundtrip(tmp_path: Path):
     yaml_text = """
 name: yaml_exp

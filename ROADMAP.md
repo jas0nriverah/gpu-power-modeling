@@ -37,6 +37,8 @@ It replaces the earlier `PLAN.md`, which described a different CUDA kernel analy
 - [x] Expand CI: linting (ruff) + train/predict smoke + inference tests
 - [x] Tests for preprocessing, model load/save, inference, evaluation, and API
 - [x] Lightweight monitoring: reference profiles, input drift checks, prediction logs
+- [x] Optional local experiment tracking with MLflow / W&B
+- [x] Optional XGBoost / LightGBM models with SHAP summaries
 
 ### Phase 4 - Documentation polish
 
@@ -45,10 +47,8 @@ It replaces the earlier `PLAN.md`, which described a different CUDA kernel analy
 ## Remaining / future
 
 - [ ] Pin one reproducible run bundle under `examples/`
-- [ ] Experiment tracking (MLflow or Weights & Biases)
 - [ ] Batch/async inference
 - [ ] Stronger monitoring on larger real datasets
-- [ ] Optional XGBoost/LightGBM models with SHAP interpretability
 
 ## Non-goals
 

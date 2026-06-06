@@ -2,7 +2,7 @@ import numpy as np
 
 from gpu_power_pipeline.data import load_dataset
 from gpu_power_pipeline.experiments import feature_set_registry
-from gpu_power_pipeline.train import train_and_evaluate
+from gpu_power_pipeline.train import optional_model_status, train_and_evaluate
 
 
 def test_training_smoke():
@@ -27,3 +27,9 @@ def test_grouped_split_smoke():
     df = load_dataset(source="synthetic", n_samples=500, random_state=5)
     results = train_and_evaluate(df, split_strategy="grouped", random_state=5)
     assert len(results) >= 1
+
+
+def test_optional_model_status_has_expected_keys():
+    status = optional_model_status()
+    assert {"sklearn_mlp", "torch_mlp", "xgboost", "lightgbm"}.issubset(status)
+    assert all(isinstance(v, bool) for v in status.values())

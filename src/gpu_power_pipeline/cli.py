@@ -40,6 +40,7 @@ from .experiments import (
     run_hyperparameter_sweep,
     run_split_comparison,
 )
+from .explainability import save_shap_summary
 from .inference import PowerModel, predict_records
 from .monitoring import (
     append_prediction_log,
@@ -61,16 +62,28 @@ from .plotting import (
 from .preprocessing import TARGET_COL, infer_feature_columns
 from .quality import save_target_quality_summary, save_worst_prediction_errors
 from .report import generate_one_page_report
+from .tracking import log_run_to_mlflow, log_run_to_wandb
 from .train import (
     SPLIT_GROUPED_SESSION,
     SPLIT_RANDOM,
     SPLIT_TIME,
     ModelArtifacts,
     fit_full_pipeline,
+    optional_model_status,
     train_and_evaluate,
 )
 
-SUBCOMMANDS = {"run", "train", "evaluate", "collect-nvidia-smi", "data-summary", "predict", "monitor", "serve"}
+SUBCOMMANDS = {
+    "run",
+    "train",
+    "evaluate",
+    "collect-nvidia-smi",
+    "data-summary",
+    "optional-status",
+    "predict",
+    "monitor",
+    "serve",
+}
 
 
 def _get_git_commit() -> Optional[str]:
@@ -119,6 +132,8 @@ def _add_common_data_args(parser: argparse.ArgumentParser) -> None:
 def _add_model_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--include-mlp", action="store_true", help="Include sklearn MLP baseline.")
     parser.add_argument("--include-torch-mlp", action="store_true", help="Include PyTorch MLP if installed.")
+    parser.add_argument("--include-xgboost", action="store_true", help="Include optional XGBoost regressor.")
+    parser.add_argument("--include-lightgbm", action="store_true", help="Include optional LightGBM regressor.")
     parser.add_argument(
         "--split-strategy",
         choices=[SPLIT_RANDOM, SPLIT_TIME, SPLIT_GROUPED_SESSION],
@@ -143,6 +158,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--run-sweep", action="store_true")
     run_p.add_argument("--generate-report", action="store_true")
     run_p.add_argument("--run-validation", action="store_true")
+    run_p.add_argument("--run-shap", action="store_true", help="Write optional SHAP summaries for tree models.")
+    run_p.add_argument("--track-mlflow", action="store_true", help="Log run to local MLflow if installed.")
+    run_p.add_argument("--track-wandb", action="store_true", help="Log run to W&B if installed.")
+    run_p.add_argument("--mlflow-tracking-uri", type=str, default=None)
+    run_p.add_argument("--mlflow-experiment-name", type=str, default=None)
+    run_p.add_argument("--wandb-project", type=str, default=None)
+    run_p.add_argument("--wandb-mode", type=str, default=None, choices=["offline", "online", "disabled"])
     run_p.add_argument("--cv-folds", type=int, default=3)
     run_p.add_argument("--save-model", action="store_true", help="Persist best model to the registry.")
 
@@ -173,6 +195,9 @@ def build_parser() -> argparse.ArgumentParser:
     data_p = sub.add_parser("data-summary", help="Summarize dataset quality and validation suitability.")
     _add_common_data_args(data_p)
     data_p.add_argument("--outdir", type=str, default="dataset_report")
+
+    # optional-status
+    sub.add_parser("optional-status", help="Show optional model dependency availability.")
 
     # predict
     pred_p = sub.add_parser("predict", help="Predict from a saved model.")
@@ -225,10 +250,23 @@ def _config_from_run_args(args: argparse.Namespace) -> ExperimentConfig:
     config.split.cv_folds = getattr(args, "cv_folds", 3)
     config.models.include_mlp = getattr(args, "include_mlp", config.models.include_mlp)
     config.models.include_torch_mlp = getattr(args, "include_torch_mlp", config.models.include_torch_mlp)
+    config.models.include_xgboost = getattr(args, "include_xgboost", config.models.include_xgboost)
+    config.models.include_lightgbm = getattr(args, "include_lightgbm", config.models.include_lightgbm)
     config.experiments.run_ablation = getattr(args, "run_ablation", False)
     config.experiments.run_sweep = getattr(args, "run_sweep", False)
     config.experiments.run_validation = getattr(args, "run_validation", False)
     config.experiments.generate_report = getattr(args, "generate_report", False)
+    config.experiments.run_shap = getattr(args, "run_shap", config.experiments.run_shap)
+    config.experiments.track_mlflow = getattr(args, "track_mlflow", config.experiments.track_mlflow)
+    config.experiments.track_wandb = getattr(args, "track_wandb", config.experiments.track_wandb)
+    config.tracking.mlflow_tracking_uri = (
+        getattr(args, "mlflow_tracking_uri", None) or config.tracking.mlflow_tracking_uri
+    )
+    config.tracking.mlflow_experiment_name = (
+        getattr(args, "mlflow_experiment_name", None) or config.tracking.mlflow_experiment_name
+    )
+    config.tracking.wandb_project = getattr(args, "wandb_project", None) or config.tracking.wandb_project
+    config.tracking.wandb_mode = getattr(args, "wandb_mode", None) or config.tracking.wandb_mode
     return config
 
 
@@ -247,7 +285,7 @@ def _load(config: ExperimentConfig, source: str) -> pd.DataFrame:
     )
 
 
-def _save_diagnostics(results: dict[str, ModelArtifacts], out_dir: Path) -> None:
+def _save_diagnostics(results: dict[str, ModelArtifacts], out_dir: Path, run_shap: bool = False) -> None:
     for model_name, artifacts in results.items():
         model_dir = out_dir / model_name
         plot_predicted_vs_actual(artifacts, model_dir)
@@ -257,6 +295,8 @@ def _save_diagnostics(results: dict[str, ModelArtifacts], out_dir: Path) -> None
         save_feature_importance_table(artifacts, model_dir)
         save_permutation_importance_table(artifacts, model_dir)
         save_worst_prediction_errors(artifacts, out_dir=out_dir / "quality", model_name=model_name)
+        if run_shap:
+            save_shap_summary(artifacts, out_dir=model_dir)
 
 
 def _feature_columns_for_reference(df: pd.DataFrame) -> tuple[list[str], list[str]]:
@@ -313,6 +353,8 @@ def _save_best_model(
         random_state=config.random_state,
         include_mlp=config.models.include_mlp,
         include_torch_mlp=config.models.include_torch_mlp,
+        include_xgboost=config.models.include_xgboost,
+        include_lightgbm=config.models.include_lightgbm,
         model_params=config.models.params,
     )
     metadata = _build_metadata(
@@ -349,11 +391,13 @@ def _run_single_dataset(
         random_state=config.random_state,
         include_mlp=config.models.include_mlp,
         include_torch_mlp=config.models.include_torch_mlp,
+        include_xgboost=config.models.include_xgboost,
+        include_lightgbm=config.models.include_lightgbm,
         split_strategy=config.split.strategy,
         model_params=config.models.params or None,
     )
     metrics_df = save_metrics(results, out_dir=out_dir)
-    _save_diagnostics(results, out_dir)
+    _save_diagnostics(results, out_dir, run_shap=config.experiments.run_shap)
 
     if config.experiments.run_ablation:
         run_feature_ablation_experiments(
@@ -361,6 +405,8 @@ def _run_single_dataset(
             out_dir=out_dir / "ablation",
             include_mlp=config.models.include_mlp,
             include_torch_mlp=config.models.include_torch_mlp,
+            include_xgboost=config.models.include_xgboost,
+            include_lightgbm=config.models.include_lightgbm,
             test_size=config.split.test_size,
             random_state=config.random_state,
             split_strategy=config.split.strategy,
@@ -389,6 +435,37 @@ def _run_single_dataset(
         )
     if config.experiments.generate_report:
         generate_one_page_report(out_dir=out_dir, source=source)
+
+    if config.experiments.track_mlflow:
+        log_run_to_mlflow(
+            out_dir=out_dir,
+            metrics=metrics_df,
+            params={
+                "source": source,
+                "split_strategy": config.split.strategy,
+                "include_xgboost": config.models.include_xgboost,
+                "include_lightgbm": config.models.include_lightgbm,
+                "include_torch_mlp": config.models.include_torch_mlp,
+                "run_shap": config.experiments.run_shap,
+            },
+            tracking_uri=config.tracking.mlflow_tracking_uri,
+            experiment_name=config.tracking.mlflow_experiment_name,
+        )
+    if config.experiments.track_wandb:
+        log_run_to_wandb(
+            out_dir=out_dir,
+            metrics=metrics_df,
+            params={
+                "source": source,
+                "split_strategy": config.split.strategy,
+                "include_xgboost": config.models.include_xgboost,
+                "include_lightgbm": config.models.include_lightgbm,
+                "include_torch_mlp": config.models.include_torch_mlp,
+                "run_shap": config.experiments.run_shap,
+            },
+            project=config.tracking.wandb_project,
+            mode=config.tracking.wandb_mode,
+        )
 
     if save_model:
         _save_best_model(df=df, results=results, config=config, source=source)
@@ -439,6 +516,8 @@ def cmd_train(args: argparse.Namespace) -> None:
         random_state=config.random_state,
         include_mlp=config.models.include_mlp,
         include_torch_mlp=config.models.include_torch_mlp,
+        include_xgboost=config.models.include_xgboost,
+        include_lightgbm=config.models.include_lightgbm,
         split_strategy=config.split.strategy,
         model_params=config.models.params or None,
     )
@@ -465,6 +544,8 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
         random_state=config.random_state,
         include_mlp=config.models.include_mlp,
         include_torch_mlp=config.models.include_torch_mlp,
+        include_xgboost=config.models.include_xgboost,
+        include_lightgbm=config.models.include_lightgbm,
         split_strategy=config.split.strategy,
     )
     table = save_metrics(results, out_dir=out_dir)
@@ -495,6 +576,13 @@ def cmd_data_summary(args: argparse.Namespace) -> None:
     print(summary.to_string(index=False))
     print(f"Dataset warnings: {warning_count}; errors: {error_count}")
     print(f"Dataset report written to: {report_path.resolve()}")
+
+
+def cmd_optional_status(args: argparse.Namespace) -> None:
+    del args
+    status = optional_model_status()
+    for name, available in status.items():
+        print(f"{name}: {'available' if available else 'not installed'}")
 
 
 def _read_records(input_path: Path) -> list[dict]:
@@ -583,6 +671,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "evaluate": cmd_evaluate,
         "collect-nvidia-smi": cmd_collect_nvidia_smi,
         "data-summary": cmd_data_summary,
+        "optional-status": cmd_optional_status,
         "predict": cmd_predict,
         "monitor": cmd_monitor,
         "serve": cmd_serve,

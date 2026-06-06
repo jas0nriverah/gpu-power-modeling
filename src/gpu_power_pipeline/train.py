@@ -36,6 +36,20 @@ try:
 except Exception:
     TORCH_AVAILABLE = False
 
+try:
+    from xgboost import XGBRegressor
+
+    XGBOOST_AVAILABLE = True
+except Exception:
+    XGBOOST_AVAILABLE = False
+
+try:
+    from lightgbm import LGBMRegressor
+
+    LIGHTGBM_AVAILABLE = True
+except Exception:
+    LIGHTGBM_AVAILABLE = False
+
 
 @dataclass
 class ModelArtifacts:
@@ -128,6 +142,8 @@ class TorchMLPRegressor(BaseEstimator, RegressorMixin):
 def _build_models(
     include_mlp: bool = False,
     include_torch_mlp: bool = False,
+    include_xgboost: bool = False,
+    include_lightgbm: bool = False,
     random_state: int = 42,
     model_params: Optional[Dict[str, Dict[str, object]]] = None,
 ) -> Dict[str, object]:
@@ -168,7 +184,48 @@ def _build_models(
             random_state=random_state,
             **model_params.get("torch_mlp", {}),
         )
+    if include_xgboost:
+        if not XGBOOST_AVAILABLE:
+            raise RuntimeError("XGBoost is not installed. Install optional boosting dependencies first.")
+        xgb_params = {
+            "n_estimators": 300,
+            "max_depth": 4,
+            "learning_rate": 0.05,
+            "subsample": 0.9,
+            "colsample_bytree": 0.9,
+            "objective": "reg:squarederror",
+            "random_state": random_state,
+            "n_jobs": -1,
+        }
+        xgb_params.update(model_params.get("xgboost", {}))
+        models["xgboost"] = XGBRegressor(**xgb_params)
+    if include_lightgbm:
+        if not LIGHTGBM_AVAILABLE:
+            raise RuntimeError("LightGBM is not installed. Install optional boosting dependencies first.")
+        lgbm_params = {
+            "n_estimators": 300,
+            "max_depth": -1,
+            "learning_rate": 0.05,
+            "num_leaves": 31,
+            "subsample": 0.9,
+            "colsample_bytree": 0.9,
+            "random_state": random_state,
+            "n_jobs": -1,
+            "verbose": -1,
+        }
+        lgbm_params.update(model_params.get("lightgbm", {}))
+        models["lightgbm"] = LGBMRegressor(**lgbm_params)
     return models
+
+
+def optional_model_status() -> dict[str, bool]:
+    """Expose optional model availability for CLI help/tests."""
+    return {
+        "sklearn_mlp": SKLEARN_MLP_AVAILABLE,
+        "torch_mlp": TORCH_AVAILABLE,
+        "xgboost": XGBOOST_AVAILABLE,
+        "lightgbm": LIGHTGBM_AVAILABLE,
+    }
 
 
 def _extract_feature_importance(pipeline: Pipeline, model_name: str, feature_names: list[str]) -> Optional[pd.DataFrame]:
@@ -236,6 +293,8 @@ def fit_full_pipeline(
     random_state: int = 42,
     include_mlp: bool = False,
     include_torch_mlp: bool = False,
+    include_xgboost: bool = False,
+    include_lightgbm: bool = False,
     model_params: Optional[Dict[str, Dict[str, object]]] = None,
 ) -> tuple[Pipeline, list[str], list[str]]:
     """Fit a single model on the entire dataset for deployment/persistence.
@@ -256,6 +315,8 @@ def fit_full_pipeline(
     models = _build_models(
         include_mlp=include_mlp,
         include_torch_mlp=include_torch_mlp,
+        include_xgboost=include_xgboost,
+        include_lightgbm=include_lightgbm,
         random_state=random_state,
         model_params=model_params,
     )
@@ -276,6 +337,8 @@ def train_and_evaluate(
     random_state: int = 42,
     include_mlp: bool = False,
     include_torch_mlp: bool = False,
+    include_xgboost: bool = False,
+    include_lightgbm: bool = False,
     selected_features: Optional[list[str]] = None,
     split_strategy: str = "random",
     model_params: Optional[Dict[str, Dict[str, object]]] = None,
@@ -316,6 +379,8 @@ def train_and_evaluate(
     models = _build_models(
         include_mlp=include_mlp,
         include_torch_mlp=include_torch_mlp,
+        include_xgboost=include_xgboost,
+        include_lightgbm=include_lightgbm,
         random_state=random_state,
         model_params=model_params,
     )

@@ -40,6 +40,8 @@ def run_feature_ablation_experiments(
     out_dir: Path,
     include_mlp: bool = False,
     include_torch_mlp: bool = False,
+    include_xgboost: bool = False,
+    include_lightgbm: bool = False,
     test_size: float = 0.2,
     random_state: int = 42,
     split_strategy: str = "random",
@@ -56,6 +58,8 @@ def run_feature_ablation_experiments(
             random_state=random_state,
             include_mlp=include_mlp,
             include_torch_mlp=include_torch_mlp,
+            include_xgboost=include_xgboost,
+            include_lightgbm=include_lightgbm,
             selected_features=features,
             split_strategy=split_strategy,
         )

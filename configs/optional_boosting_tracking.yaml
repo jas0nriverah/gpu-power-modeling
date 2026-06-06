@@ -1,0 +1,24 @@
+name: optional_boosting_tracking
+random_state: 42
+outdir: outputs_optional
+data:
+  source: synthetic
+  n_samples: 12000
+split:
+  strategy: grouped
+  test_size: 0.2
+  cv_folds: 3
+models:
+  include_xgboost: true
+  include_lightgbm: true
+experiments:
+  run_validation: true
+  generate_report: true
+  run_shap: true
+  track_mlflow: true
+  track_wandb: true
+tracking:
+  mlflow_tracking_uri: mlruns
+  mlflow_experiment_name: gpu-power-modeling
+  wandb_project: gpu-power-modeling
+  wandb_mode: offline
