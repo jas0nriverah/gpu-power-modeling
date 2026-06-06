@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
 from urllib.request import urlopen
@@ -8,7 +10,84 @@ from urllib.request import urlopen
 import numpy as np
 import pandas as pd
 
-DatasetSource = Literal["synthetic", "nrel_eagle", "bmcdata_public"]
+DatasetSource = Literal["synthetic", "nrel_eagle", "bmcdata_public", "mit_supercloud", "local_nvidia_smi"]
+
+
+@dataclass(frozen=True)
+class DatasetSpec:
+    """Small adapter contract for normalized modeling data."""
+
+    name: str
+    data_kind: str
+    description: str
+    required_columns: tuple[str, ...]
+    recommended_columns: tuple[str, ...]
+    grouped_validation_column: str = "session_id"
+    timestamp_column: str = "timestamp"
+    target_column: str = "power_watts"
+
+
+NORMALIZED_REQUIRED_COLUMNS = ("power_watts",)
+NORMALIZED_RECOMMENDED_COLUMNS = (
+    "timestamp",
+    "session_id",
+    "gpu_utilization_pct",
+    "memory_utilization_pct",
+    "graphics_clock_mhz",
+    "memory_clock_mhz",
+    "temperature_c",
+    "workload_type",
+)
+
+DATASET_SPECS: dict[str, DatasetSpec] = {
+    "synthetic": DatasetSpec(
+        name="synthetic",
+        data_kind="synthetic",
+        description="Generated telemetry for pipeline development and CI, not real-world accuracy claims.",
+        required_columns=NORMALIZED_REQUIRED_COLUMNS,
+        recommended_columns=NORMALIZED_RECOMMENDED_COLUMNS,
+    ),
+    "bmcdata_public": DatasetSpec(
+        name="bmcdata_public",
+        data_kind="public_real_trace",
+        description="Public BMC telemetry traces normalized into the common modeling schema.",
+        required_columns=NORMALIZED_REQUIRED_COLUMNS,
+        recommended_columns=NORMALIZED_RECOMMENDED_COLUMNS,
+    ),
+    "mit_supercloud": DatasetSpec(
+        name="mit_supercloud",
+        data_kind="public_real_trace",
+        description="MIT Supercloud HPCA22 public NVIDIA GPU telemetry normalized from dcgm.csv or nvidia_smi.csv.",
+        required_columns=NORMALIZED_REQUIRED_COLUMNS,
+        recommended_columns=NORMALIZED_RECOMMENDED_COLUMNS,
+    ),
+    "local_nvidia_smi": DatasetSpec(
+        name="local_nvidia_smi",
+        data_kind="local_measured_trace",
+        description="Local measured NVIDIA GPU telemetry collected with nvidia-smi on an allowed machine.",
+        required_columns=NORMALIZED_REQUIRED_COLUMNS,
+        recommended_columns=NORMALIZED_RECOMMENDED_COLUMNS,
+    ),
+    "nrel_eagle": DatasetSpec(
+        name="nrel_eagle",
+        data_kind="public_manual_trace",
+        description="Public NREL Eagle long-format telemetry loaded from a user-provided CSV.",
+        required_columns=NORMALIZED_REQUIRED_COLUMNS,
+        recommended_columns=NORMALIZED_RECOMMENDED_COLUMNS,
+    ),
+}
+
+
+def get_dataset_spec(source: str) -> DatasetSpec:
+    """Return the normalized schema expectations for a dataset source."""
+    if source not in DATASET_SPECS:
+        raise ValueError(f"Unsupported source: {source}")
+    return DATASET_SPECS[source]
+
+
+def available_dataset_sources() -> list[str]:
+    """List registered dataset adapters."""
+    return sorted(DATASET_SPECS)
 
 
 def generate_synthetic_gpu_power_data(
@@ -144,6 +223,189 @@ def _load_nrel_eagle_long_csv(path: Path) -> pd.DataFrame:
     wide["session_id"] = wide["dv"].astype(str)
     wide["workload_type"] = "unknown"
     return wide
+
+
+def _clean_column_name(name: object) -> str:
+    """Normalize source-specific telemetry headers to stable snake_case."""
+    cleaned = re.sub(r"[^0-9a-zA-Z]+", "_", str(name).strip().lower())
+    return cleaned.strip("_")
+
+
+def _first_existing(columns: set[str], candidates: list[str]) -> Optional[str]:
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    return None
+
+
+def _resolve_gpu_telemetry_csv(path: Path, preferred_files: list[str], source_name: str) -> Path:
+    if path.is_file():
+        return path
+    if not path.is_dir():
+        raise FileNotFoundError(f"{source_name} path does not exist: {path}")
+    for filename in preferred_files:
+        candidate = path / filename
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        f"Expected one of {preferred_files} under {path}. "
+        f"Prepare {source_name} data in this directory first."
+    )
+
+
+def _load_gpu_telemetry_csv(
+    path: Path,
+    source_name: str,
+    preferred_files: list[str],
+    max_rows: Optional[int] = None,
+) -> pd.DataFrame:
+    """Load GPU telemetry and normalize common DCGM/nvidia-smi fields."""
+    csv_path = _resolve_gpu_telemetry_csv(path, preferred_files=preferred_files, source_name=source_name)
+    df = pd.read_csv(csv_path, nrows=max_rows)
+    if df.empty:
+        raise ValueError(f"{source_name} CSV is empty: {csv_path}")
+
+    original_columns = list(df.columns)
+    renamed = {_clean_column_name(col): col for col in original_columns}
+    clean = df.rename(columns={original: _clean_column_name(original) for original in original_columns})
+    columns = set(clean.columns)
+
+    target_col = _first_existing(
+        columns,
+        [
+            "power_draw_w",
+            "power_draw_watts",
+            "power_watts",
+            "gpu_power_w",
+            "gpu_power",
+            "power",
+        ],
+    )
+    if target_col is None:
+        raise ValueError(
+            f"{source_name} CSV must include a GPU power column such as "
+            "'power draw W', 'power_draw_w', or 'power_watts'."
+        )
+
+    out = pd.DataFrame()
+    out["power_watts"] = pd.to_numeric(clean[target_col], errors="coerce")
+
+    timestamp_col = _first_existing(columns, ["timestamp", "time", "datetime", "ts"])
+    if timestamp_col:
+        out["timestamp"] = pd.to_datetime(clean[timestamp_col], errors="coerce")
+
+    job_col = _first_existing(columns, ["job_id", "jobid", "slurm_job_id", "jid"])
+    node_col = _first_existing(columns, ["node", "hostname", "host", "node_id"])
+    gpu_col = _first_existing(columns, ["gpu", "gpu_id", "device_id", "minor_number", "index"])
+    if job_col:
+        out["session_id"] = clean[job_col].astype(str)
+    elif node_col:
+        out["session_id"] = clean[node_col].astype(str)
+    else:
+        out["session_id"] = csv_path.stem
+    if gpu_col:
+        out["gpu_id"] = clean[gpu_col].astype(str)
+        out["session_id"] = out["session_id"].astype(str) + "_gpu_" + out["gpu_id"].astype(str)
+
+    feature_map = {
+        "gpu_utilization_pct": [
+            "utilization_gpu_pct",
+            "gpu_utilization_pct",
+            "utilization_gpu",
+            "gpu_utilization",
+            "sm_utilization",
+            "sm_utilization_pct",
+        ],
+        "memory_utilization_pct": [
+            "utilization_memory_pct",
+            "memory_utilization_pct",
+            "utilization_memory",
+            "memory_utilization",
+        ],
+        "temperature_c": [
+            "temperature_gpu",
+            "temperature_gpu_c",
+            "gpu_temperature",
+            "gpu_temperature_c",
+            "temperature_c",
+        ],
+        "memory_temperature_c": [
+            "temperature_memory",
+            "temperature_memory_c",
+            "memory_temperature",
+            "memory_temperature_c",
+        ],
+        "memory_used_mib": [
+            "memory_used_mib",
+            "memory_used_mb",
+            "gpu_memory_used_mib",
+            "gpu_memory_used_mb",
+        ],
+        "memory_free_mib": [
+            "memory_free_mib",
+            "memory_free_mb",
+            "gpu_memory_free_mib",
+            "gpu_memory_free_mb",
+        ],
+        "graphics_clock_mhz": [
+            "clocks_sm_mhz",
+            "sm_clock_mhz",
+            "graphics_clock_mhz",
+            "clock_sm_mhz",
+        ],
+        "memory_clock_mhz": [
+            "clocks_mem_mhz",
+            "memory_clock_mhz",
+            "clock_memory_mhz",
+            "mem_clock_mhz",
+        ],
+        "pcie_tx_mbps": ["pcie_tx_mbps", "pcie_tx_bytes", "pcie_tx"],
+        "pcie_rx_mbps": ["pcie_rx_mbps", "pcie_rx_bytes", "pcie_rx"],
+    }
+    for output_col, candidates in feature_map.items():
+        source_col = _first_existing(columns, candidates)
+        if source_col:
+            out[output_col] = pd.to_numeric(clean[source_col], errors="coerce")
+
+    out["workload_type"] = f"{source_name}_gpu_trace"
+    out["source_file"] = csv_path.name
+    out = out.dropna(subset=["power_watts"])
+    out = out[(out["power_watts"] > 0) & (out["power_watts"] < 2000)]
+    if out.empty:
+        raise ValueError(f"{source_name} CSV has no valid positive GPU power rows after normalization.")
+
+    missing_recommended = [
+        name
+        for name in ["gpu_utilization_pct", "memory_utilization_pct", "temperature_c"]
+        if name not in out.columns
+    ]
+    if missing_recommended:
+        original = ", ".join(sorted(renamed.values()))
+        raise ValueError(
+            f"{source_name} CSV is missing key GPU telemetry columns after normalization: "
+            f"{missing_recommended}. Available columns: {original}"
+        )
+    return out.reset_index(drop=True)
+
+
+def _load_mit_supercloud_csv(path: Path, max_rows: Optional[int] = None) -> pd.DataFrame:
+    """Load public MIT Supercloud GPU telemetry."""
+    return _load_gpu_telemetry_csv(
+        path=path,
+        source_name="mit_supercloud",
+        preferred_files=["dcgm.csv", "nvidia_smi.csv"],
+        max_rows=max_rows,
+    )
+
+
+def _load_local_nvidia_smi_csv(path: Path, max_rows: Optional[int] = None) -> pd.DataFrame:
+    """Load local measured NVIDIA GPU telemetry collected by this project."""
+    return _load_gpu_telemetry_csv(
+        path=path,
+        source_name="local_nvidia_smi",
+        preferred_files=["gpu_telemetry.csv", "nvidia_smi.csv"],
+        max_rows=max_rows,
+    )
 
 
 def _fetch_github_repo_file_listing(owner: str, repo: str, path: str, ref: str = "master") -> list[dict]:
@@ -375,6 +637,7 @@ def load_dataset(
     random_state: int = 42,
     bmcdata_dir: Optional[str] = None,
     bmcdata_max_files: int = 10,
+    max_rows: Optional[int] = None,
 ) -> pd.DataFrame:
     """Load dataset by source using public or synthetic inputs only."""
     if source == "synthetic":
@@ -386,6 +649,14 @@ def load_dataset(
         if not data_path:
             raise ValueError("data_path is required when source='nrel_eagle'.")
         return _load_nrel_eagle_long_csv(Path(data_path))
+    if source == "mit_supercloud":
+        if not data_path:
+            raise ValueError("data_path is required when source='mit_supercloud'.")
+        return _load_mit_supercloud_csv(Path(data_path), max_rows=max_rows)
+    if source == "local_nvidia_smi":
+        if not data_path:
+            raise ValueError("data_path is required when source='local_nvidia_smi'.")
+        return _load_local_nvidia_smi_csv(Path(data_path), max_rows=max_rows)
     if source == "bmcdata_public":
         if not bmcdata_dir:
             raise ValueError("bmcdata_dir is required when source='bmcdata_public'.")

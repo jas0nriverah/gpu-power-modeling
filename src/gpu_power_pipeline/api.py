@@ -11,6 +11,7 @@ Configure via environment variables (with sensible defaults):
 - ``GPU_POWER_REGISTRY_DIR`` (default ``artifacts``)
 - ``GPU_POWER_MODEL_NAME``   (default ``random_forest``)
 - ``GPU_POWER_MODEL_VERSION`` (default ``latest``)
+- ``GPU_POWER_PREDICTION_LOG`` (optional JSONL prediction log path)
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from .inference import PowerModel, load_model
+from .monitoring import append_prediction_log
 
 
 class TelemetryRecord(BaseModel):
@@ -70,6 +72,7 @@ def create_app(
     registry_dir = registry_dir or os.environ.get("GPU_POWER_REGISTRY_DIR", "artifacts")
     model_name = model_name or os.environ.get("GPU_POWER_MODEL_NAME", "random_forest")
     version = version or os.environ.get("GPU_POWER_MODEL_VERSION", "latest")
+    prediction_log = os.environ.get("GPU_POWER_PREDICTION_LOG")
 
     app = FastAPI(
         title="GPU Power Modeling API",
@@ -134,6 +137,17 @@ def create_app(
             preds = model.predict(records)
         except Exception as exc:  # noqa: BLE001 - bad input -> 400
             raise HTTPException(status_code=400, detail=f"Prediction failed: {exc}") from exc
+        if prediction_log:
+            try:
+                append_prediction_log(
+                    log_path=prediction_log,
+                    model_name=model.metadata.model_name,
+                    model_version=model.metadata.version,
+                    input_frame=model._align_frame(records),
+                    predictions=preds,
+                )
+            except Exception as exc:  # noqa: BLE001 - logging should not block inference
+                state["prediction_log_error"] = str(exc)
         return PredictResponse(
             model_name=model.metadata.model_name,
             model_version=model.metadata.version,

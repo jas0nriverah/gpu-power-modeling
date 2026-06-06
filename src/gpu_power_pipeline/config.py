@@ -38,6 +38,7 @@ class DataConfig:
     source: str = "synthetic"
     data_path: Optional[str] = None
     n_samples: int = 12000
+    max_rows: Optional[int] = None
     bmcdata_dir: str = "data/bmcdata_public"
     bmcdata_max_files: int = 10
 

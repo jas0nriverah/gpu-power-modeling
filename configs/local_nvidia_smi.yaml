@@ -1,0 +1,13 @@
+name: local_nvidia_smi_grouped
+random_state: 42
+outdir: outputs_local_nvidia_smi
+data:
+  source: local_nvidia_smi
+  data_path: data/local_nvidia_smi
+split:
+  strategy: grouped
+  test_size: 0.2
+  cv_folds: 3
+experiments:
+  run_validation: true
+  generate_report: true

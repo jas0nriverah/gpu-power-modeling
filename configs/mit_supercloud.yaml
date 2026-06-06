@@ -1,0 +1,14 @@
+name: mit_supercloud_grouped
+random_state: 42
+outdir: outputs_mit_supercloud
+data:
+  source: mit_supercloud
+  data_path: data/mit_supercloud
+  max_rows: 100000
+split:
+  strategy: grouped
+  test_size: 0.2
+  cv_folds: 3
+experiments:
+  run_validation: true
+  generate_report: true

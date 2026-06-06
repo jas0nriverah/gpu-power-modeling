@@ -5,7 +5,10 @@ Subcommands:
 - ``run``      end-to-end experiment (data -> train -> evaluate -> artifacts)
 - ``train``    fit the best (or chosen) model on all data and save a bundle
 - ``evaluate`` score a saved/freshly trained model and write metrics
+- ``collect-nvidia-smi`` collect local measured GPU telemetry
+- ``data-summary`` inspect dataset schema, units, and validation suitability
 - ``predict``  load a saved model and predict on a CSV/JSON of telemetry
+- ``monitor``  compare new prediction inputs with reference feature stats
 - ``serve``    launch the FastAPI inference service
 
 For backward compatibility, invoking with no subcommand (e.g.
@@ -26,8 +29,10 @@ from typing import Optional, Sequence
 import pandas as pd
 
 from .audit import audit_dataset
+from .collection import collect_nvidia_smi_samples
 from .config import ExperimentConfig
-from .data import load_dataset
+from .data import available_dataset_sources, load_dataset
+from .data_validation import save_dataset_summary
 from .evaluation import metrics_table, save_metrics
 from .experiments import (
     run_feature_ablation_experiments,
@@ -36,6 +41,13 @@ from .experiments import (
     run_split_comparison,
 )
 from .inference import PowerModel, predict_records
+from .monitoring import (
+    append_prediction_log,
+    build_reference_profile,
+    load_reference_profile,
+    run_monitoring,
+    save_reference_profile,
+)
 from .persistence import ModelMetadata, new_version_id, save_model_bundle
 from .plotting import (
     plot_feature_importance,
@@ -46,7 +58,7 @@ from .plotting import (
     save_feature_importance_table,
     save_permutation_importance_table,
 )
-from .preprocessing import TARGET_COL
+from .preprocessing import TARGET_COL, infer_feature_columns
 from .quality import save_target_quality_summary, save_worst_prediction_errors
 from .report import generate_one_page_report
 from .train import (
@@ -58,7 +70,7 @@ from .train import (
     train_and_evaluate,
 )
 
-SUBCOMMANDS = {"run", "train", "evaluate", "predict", "serve"}
+SUBCOMMANDS = {"run", "train", "evaluate", "collect-nvidia-smi", "data-summary", "predict", "monitor", "serve"}
 
 
 def _get_git_commit() -> Optional[str]:
@@ -90,9 +102,15 @@ def _write_run_metadata(extra: dict, source: str, out_dir: Path) -> None:
 # Argument parsing
 # --------------------------------------------------------------------------- #
 def _add_common_data_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--source", choices=["synthetic", "nrel_eagle", "bmcdata_public"], default="synthetic")
-    parser.add_argument("--data-path", type=str, default=None, help="CSV path for source=nrel_eagle.")
+    parser.add_argument("--source", choices=available_dataset_sources(), default="synthetic")
+    parser.add_argument(
+        "--data-path",
+        type=str,
+        default=None,
+        help="CSV path or source directory for manual public datasets such as nrel_eagle or mit_supercloud.",
+    )
     parser.add_argument("--n-samples", type=int, default=12000, help="Synthetic sample count.")
+    parser.add_argument("--max-rows", type=int, default=None, help="Optional row cap for large manual CSV sources.")
     parser.add_argument("--bmcdata-dir", type=str, default="data/bmcdata_public")
     parser.add_argument("--bmcdata-max-files", type=int, default=10)
     parser.add_argument("--random-state", type=int, default=42)
@@ -143,6 +161,19 @@ def build_parser() -> argparse.ArgumentParser:
     _add_model_args(eval_p)
     eval_p.add_argument("--outdir", type=str, default="outputs_eval")
 
+    # collect-nvidia-smi
+    collect_p = sub.add_parser("collect-nvidia-smi", help="Collect local measured NVIDIA GPU telemetry.")
+    collect_p.add_argument("--out", type=str, default="data/local_nvidia_smi/gpu_telemetry.csv")
+    collect_p.add_argument("--duration-seconds", type=float, default=60.0)
+    collect_p.add_argument("--interval-seconds", type=float, default=1.0)
+    collect_p.add_argument("--session-id", type=str, default=None)
+    collect_p.add_argument("--workload-type", type=str, default="local_nvidia_smi_trace")
+
+    # data-summary
+    data_p = sub.add_parser("data-summary", help="Summarize dataset quality and validation suitability.")
+    _add_common_data_args(data_p)
+    data_p.add_argument("--outdir", type=str, default="dataset_report")
+
     # predict
     pred_p = sub.add_parser("predict", help="Predict from a saved model.")
     pred_p.add_argument("--registry-dir", type=str, default="artifacts")
@@ -150,6 +181,19 @@ def build_parser() -> argparse.ArgumentParser:
     pred_p.add_argument("--model-version", type=str, default="latest")
     pred_p.add_argument("--input", type=str, required=True, help="CSV or JSON of telemetry records.")
     pred_p.add_argument("--output", type=str, default=None, help="Optional CSV path for predictions.")
+    pred_p.add_argument("--log-path", type=str, default=None, help="Optional JSONL file for prediction logs.")
+
+    # monitor
+    mon_p = sub.add_parser("monitor", help="Check prediction inputs against training/reference distributions.")
+    mon_p.add_argument(
+        "--reference",
+        type=str,
+        required=True,
+        help="Run directory, monitoring directory, reference_profile.json, or model bundle directory.",
+    )
+    mon_p.add_argument("--input", type=str, required=True, help="CSV or JSON of new prediction inputs.")
+    mon_p.add_argument("--outdir", type=str, default="monitoring_report")
+    mon_p.add_argument("--min-rows", type=int, default=20, help="Warn when input has fewer rows than this.")
 
     # serve
     serve_p = sub.add_parser("serve", help="Launch the FastAPI inference service.")
@@ -173,13 +217,14 @@ def _config_from_run_args(args: argparse.Namespace) -> ExperimentConfig:
     config.data.source = args.source
     config.data.data_path = args.data_path
     config.data.n_samples = args.n_samples
+    config.data.max_rows = getattr(args, "max_rows", None)
     config.data.bmcdata_dir = args.bmcdata_dir
     config.data.bmcdata_max_files = args.bmcdata_max_files
-    config.split.strategy = args.split_strategy
-    config.split.test_size = args.test_size
+    config.split.strategy = getattr(args, "split_strategy", config.split.strategy)
+    config.split.test_size = getattr(args, "test_size", config.split.test_size)
     config.split.cv_folds = getattr(args, "cv_folds", 3)
-    config.models.include_mlp = args.include_mlp
-    config.models.include_torch_mlp = args.include_torch_mlp
+    config.models.include_mlp = getattr(args, "include_mlp", config.models.include_mlp)
+    config.models.include_torch_mlp = getattr(args, "include_torch_mlp", config.models.include_torch_mlp)
     config.experiments.run_ablation = getattr(args, "run_ablation", False)
     config.experiments.run_sweep = getattr(args, "run_sweep", False)
     config.experiments.run_validation = getattr(args, "run_validation", False)
@@ -198,6 +243,7 @@ def _load(config: ExperimentConfig, source: str) -> pd.DataFrame:
         random_state=config.random_state,
         bmcdata_dir=config.data.bmcdata_dir,
         bmcdata_max_files=config.data.bmcdata_max_files,
+        max_rows=config.data.max_rows,
     )
 
 
@@ -213,10 +259,28 @@ def _save_diagnostics(results: dict[str, ModelArtifacts], out_dir: Path) -> None
         save_worst_prediction_errors(artifacts, out_dir=out_dir / "quality", model_name=model_name)
 
 
+def _feature_columns_for_reference(df: pd.DataFrame) -> tuple[list[str], list[str]]:
+    numeric_cols, categorical_cols = infer_feature_columns(df, target_col=TARGET_COL)
+    numeric_cols = [c for c in numeric_cols if c != "timestamp"]
+    categorical_cols = [c for c in categorical_cols if c != "timestamp"]
+    return numeric_cols, categorical_cols
+
+
+def _build_reference_profile_for_dataset(df: pd.DataFrame) -> dict:
+    numeric_cols, categorical_cols = _feature_columns_for_reference(df)
+    return build_reference_profile(
+        df=df,
+        feature_order=numeric_cols + categorical_cols,
+        numeric_features=numeric_cols,
+        categorical_features=categorical_cols,
+    )
+
+
 def _build_metadata(
     artifacts: ModelArtifacts,
     source: str,
     split_strategy: str,
+    reference_profile: Optional[dict] = None,
 ) -> ModelMetadata:
     return ModelMetadata(
         model_name=artifacts.model_name,
@@ -228,6 +292,7 @@ def _build_metadata(
         split_strategy=split_strategy,
         source=source,
         version=new_version_id(),
+        reference_profile=reference_profile or {},
         git_commit=_get_git_commit(),
     )
 
@@ -250,7 +315,12 @@ def _save_best_model(
         include_torch_mlp=config.models.include_torch_mlp,
         model_params=config.models.params,
     )
-    metadata = _build_metadata(artifacts, source=source, split_strategy=config.split.strategy)
+    metadata = _build_metadata(
+        artifacts,
+        source=source,
+        split_strategy=config.split.strategy,
+        reference_profile=_build_reference_profile_for_dataset(df),
+    )
     version_dir = save_model_bundle(pipeline, metadata, registry_dir=config.registry_dir)
     print(f"Saved model '{chosen}' -> {version_dir}")
     return version_dir
@@ -267,9 +337,11 @@ def _run_single_dataset(
     _write_run_metadata(extra=metadata_extra or {}, source=source, out_dir=out_dir)
 
     df = _load(config, source)
+    save_dataset_summary(df, source=source, out_dir=out_dir / "data")
     save_dataset_preview(df, out_dir=out_dir)
     save_target_quality_summary(df, out_dir=out_dir / "quality")
     audit_dataset(df, out_dir=out_dir / "audit")
+    save_reference_profile(_build_reference_profile_for_dataset(df), out_dir=out_dir / "monitoring")
 
     results = train_and_evaluate(
         df,
@@ -360,6 +432,7 @@ def cmd_train(args: argparse.Namespace) -> None:
     config = _config_from_run_args(args)
     source = config.data.source
     df = _load(config, source)
+    save_dataset_summary(df, source=source, out_dir=Path(args.outdir) / "data")
     results = train_and_evaluate(
         df,
         test_size=config.split.test_size,
@@ -385,6 +458,7 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     out_dir = Path(args.outdir)
     out_dir.mkdir(parents=True, exist_ok=True)
     df = _load(config, config.data.source)
+    save_dataset_summary(df, source=config.data.source, out_dir=out_dir / "data")
     results = train_and_evaluate(
         df,
         test_size=config.split.test_size,
@@ -398,6 +472,31 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     print(f"Metrics written to: {(out_dir / 'metrics.csv').resolve()}")
 
 
+def cmd_collect_nvidia_smi(args: argparse.Namespace) -> None:
+    out_path = collect_nvidia_smi_samples(
+        out_path=args.out,
+        duration_seconds=args.duration_seconds,
+        interval_seconds=args.interval_seconds,
+        session_id=args.session_id,
+        workload_type=args.workload_type,
+    )
+    print(f"Local NVIDIA GPU telemetry written to: {out_path.resolve()}")
+    print("Load it with: gpu-power-pipeline data-summary --source local_nvidia_smi --data-path " f"{out_path}")
+
+
+def cmd_data_summary(args: argparse.Namespace) -> None:
+    config = _config_from_run_args(args)
+    out_dir = Path(args.outdir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df = _load(config, config.data.source)
+    summary, warnings, report_path = save_dataset_summary(df, source=config.data.source, out_dir=out_dir)
+    warning_count = int((warnings["severity"] == "warning").sum()) if not warnings.empty else 0
+    error_count = int((warnings["severity"] == "error").sum()) if not warnings.empty else 0
+    print(summary.to_string(index=False))
+    print(f"Dataset warnings: {warning_count}; errors: {error_count}")
+    print(f"Dataset report written to: {report_path.resolve()}")
+
+
 def _read_records(input_path: Path) -> list[dict]:
     if input_path.suffix.lower() == ".json":
         data = json.loads(input_path.read_text(encoding="utf-8"))
@@ -408,11 +507,26 @@ def _read_records(input_path: Path) -> list[dict]:
     return frame.to_dict(orient="records")
 
 
+def _read_frame(input_path: Path) -> pd.DataFrame:
+    if input_path.suffix.lower() == ".json":
+        return pd.DataFrame(_read_records(input_path))
+    return pd.read_csv(input_path)
+
+
 def cmd_predict(args: argparse.Namespace) -> None:
     model = PowerModel.from_registry(args.registry_dir, args.model_name, version=args.model_version)
     records = _read_records(Path(args.input))
     rows = predict_records(model, records)
     out_df = pd.DataFrame(rows)
+    if args.log_path:
+        aligned = model._align_frame(records)
+        append_prediction_log(
+            log_path=args.log_path,
+            model_name=model.metadata.model_name,
+            model_version=model.metadata.version,
+            input_frame=aligned,
+            predictions=out_df["predicted_power_watts"].tolist(),
+        )
     if args.output:
         out_path = Path(args.output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -420,6 +534,23 @@ def cmd_predict(args: argparse.Namespace) -> None:
         print(f"Predictions written to: {out_path.resolve()}")
     else:
         print(out_df.to_string(index=False))
+
+
+def cmd_monitor(args: argparse.Namespace) -> None:
+    reference = load_reference_profile(args.reference)
+    input_path = Path(args.input)
+    input_frame = _read_frame(input_path)
+    drift, drift_path, report_path = run_monitoring(
+        reference_profile=reference,
+        input_frame=input_frame,
+        out_dir=args.outdir,
+        input_path=input_path,
+        min_rows=args.min_rows,
+    )
+    warnings = int((drift["severity"] == "warning").sum()) if not drift.empty else 0
+    print(f"Monitoring warnings: {warnings}")
+    print(f"Drift report written to: {drift_path.resolve()}")
+    print(f"Markdown report written to: {report_path.resolve()}")
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
@@ -450,7 +581,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "run": cmd_run,
         "train": cmd_train,
         "evaluate": cmd_evaluate,
+        "collect-nvidia-smi": cmd_collect_nvidia_smi,
+        "data-summary": cmd_data_summary,
         "predict": cmd_predict,
+        "monitor": cmd_monitor,
         "serve": cmd_serve,
     }
     handler = handlers.get(args.command)

@@ -7,6 +7,8 @@ outputs/
 outputs_*/
 ci_outputs/
 data/bmcdata_public/
+data/mit_supercloud/
+data/local_nvidia_smi/
 
 # Keep the registry folder but not trained model blobs.
 artifacts/*

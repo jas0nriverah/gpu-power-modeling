@@ -45,6 +45,7 @@ class ModelMetadata:
     split_strategy: str
     source: str
     version: str
+    reference_profile: Dict[str, Any] = field(default_factory=dict)
     created_utc: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     python_version: str = field(default_factory=platform.python_version)
     sklearn_version: str = field(default_factory=lambda: sklearn.__version__)
