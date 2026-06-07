@@ -1,127 +1,201 @@
 # GPU Power Modeling Pipeline
 
-**Predict server/accelerator power (watts) from public telemetry with a reproducible ML pipeline.**
+**Predict server and accelerator power from GPU telemetry with a reproducible ML pipeline.**
 
 ## Summary
 
-- **What it does:** predicts `power_watts` from GPU telemetry (utilization, clocks, temperature, workload labels).
-- **Why it matters:** power estimates help with capacity planning, scheduling, and thermal analysis.
-- **What makes it credible:** public data only, dataset checks, leakage filtering, grouped validation, saved models, API serving, and drift checks.
-- **How to run:** install, run a synthetic experiment, then train or serve a saved model.
-- **Limitation:** real public traces are noisy. Grouped CV is the metric to trust, even when R² is negative.
+* **What it does:** predicts `power_watts` from GPU telemetry such as utilization, clocks, temperature, and workload labels.
+* **Why it matters:** power estimates support capacity planning, scheduling, and thermal analysis.
+* **What makes it reliable:** public data sources, dataset checks, leakage filtering, grouped validation, saved models, API serving, and drift checks.
+* **How to run:** install the package, run a synthetic experiment, then train, evaluate, serve, or monitor a saved model.
+* **Key limitation:** public telemetry traces are noisy and can shift heavily across sessions. Grouped validation is the primary metric for real-world claims.
 
 ## Problem
 
-Clusters need power estimates from utilization, clocks, and temperature. This repo predicts `power_watts` from public or synthetic telemetry with clear validation.
+GPU clusters need practical power estimates from utilization, clocks, temperature, and workload metadata. This repo predicts `power_watts` from public or synthetic telemetry using a validation-first ML workflow.
 
 ## Motivation
 
-Random row splits can look good on telemetry data because rows from the same trace are similar. This project uses grouped validation and dataset checks to keep results honest.
+Telemetry rows from the same trace are often highly similar. Random row splits can produce overly optimistic results because the model sees near-duplicate sessions during training and testing.
+
+This project emphasizes grouped validation, dataset checks, and leakage filtering so results better reflect generalization to new traces.
 
 ## Data modes
 
-| Mode | Label | Source | Notes |
-|------|-------|--------|-------|
-| `synthetic` | Synthetic | Generated in-repo | Useful for pipeline tests, CI, and demos |
-| `bmcdata_public` | Real public trace | [arealuser/bmcdata](https://github.com/arealuser/bmcdata) | Auto-downloaded BMC telemetry with unit normalization + leakage filtering |
-| `local_nvidia_smi` | Local measured trace | Collected by this repo on an allowed NVIDIA GPU machine | Fast path for campus lab, makerspace, or workstation telemetry |
-| `mit_supercloud` | Real public NVIDIA GPU telemetry | [MIT Supercloud HPCA22](https://github.com/boringlee24/HPCA22_SuperCloud) | Manual `dcgm.csv` or `nvidia_smi.csv` path; includes GPU utilization and power draw |
-| `nrel_eagle` | Real public trace | [NREL HPC Eagle](https://data.nrel.gov/submissions/301) | Manual CSV path for public long-format GPU metrics |
+| Mode               | Label                            | Source                                                                    | Notes                                                                               |
+| ------------------ | -------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `synthetic`        | Synthetic                        | Generated in-repo                                                         | Useful for pipeline tests, CI, and demos                                            |
+| `bmcdata_public`   | Real public trace                | [arealuser/bmcdata](https://github.com/arealuser/bmcdata)                 | Auto-downloaded BMC telemetry with unit normalization and leakage filtering         |
+| `local_nvidia_smi` | Local measured trace             | Collected by this repo on an allowed NVIDIA GPU machine                   | Fast path for campus lab, makerspace, or workstation telemetry                      |
+| `mit_supercloud`   | Real public NVIDIA GPU telemetry | [MIT Supercloud HPCA22](https://github.com/boringlee24/HPCA22_SuperCloud) | Manual `dcgm.csv` or `nvidia_smi.csv` path; includes GPU utilization and power draw |
+| `nrel_eagle`       | Real public trace                | [NREL HPC Eagle](https://data.nrel.gov/submissions/301)                   | Manual CSV path for public long-format GPU metrics                                  |
 
-All data is **public or synthetic**. No proprietary datasets or confidential workflows.
+All supported data sources are **public, synthetic, or locally collected by the user on permitted hardware**. No proprietary datasets or confidential workflows are included.
 
-Each loader maps raw data to a shared schema: `power_watts`, optional `timestamp`, optional `session_id`, plus utilization, clocks, temperature, and workload fields. Use synthetic data to test the pipeline. Use real public traces for real-world claims.
+Each loader maps raw data to a shared schema:
 
-Predictions, residuals, drift reports, and similar outputs are **calculated artifacts**, not measured power traces.
+* required: `power_watts`
+* optional: `timestamp`, `session_id`
+* recommended: utilization, clocks, temperature, and workload fields
+
+Use synthetic data to test the pipeline. Use real public traces for real-world claims.
+
+Predictions, residuals, drift reports, and monitoring outputs are calculated artifacts, not measured power traces.
 
 ## Architecture
 
 ```mermaid
-flowchart TD
-    A[Data adapters: synthetic, local nvidia-smi, BMC public, MIT Supercloud, NREL CSV] --> B[Schema, unit, and quality checks]
-    B --> C[Leakage filtering + preprocessing]
-    C --> D[Model training]
-    D --> E[Grouped, time, or random validation]
-    D --> F[Model registry]
-    E --> G[Metrics, plots, reports]
-    F --> H[Batch prediction + FastAPI serving]
-    H --> I[Prediction logs + drift monitoring]
-    B --> I
+flowchart LR
+    subgraph Sources["Data Sources"]
+        A1[Synthetic telemetry]
+        A2[Public traces]
+        A3[Local nvidia-smi capture]
+        A4[Manual CSV imports]
+    end
+
+    subgraph DataLayer["Data Layer"]
+        B[Adapters]
+        C[Schema + unit checks]
+        D[Dataset quality report]
+        E[Leakage audit]
+    end
+
+    subgraph Modeling["Modeling Pipeline"]
+        F[Preprocessing]
+        G[Train regressors]
+        H[Grouped / time / random validation]
+        I[Metrics + plots + reports]
+    end
+
+    subgraph Registry["Model Registry"]
+        J[Versioned model bundle]
+        K[Metadata + feature profile]
+    end
+
+    subgraph Deployment["Inference + Monitoring"]
+        L[Batch prediction]
+        M[FastAPI service]
+        N[Prediction logs]
+        O[Drift report]
+    end
+
+    A1 --> B
+    A2 --> B
+    A3 --> B
+    A4 --> B
+
+    B --> C
+    C --> D
+    C --> E
+    E --> F
+    F --> G
+    G --> H
+    H --> I
+
+    G --> J
+    J --> K
+
+    J --> L
+    J --> M
+    L --> N
+    M --> N
+    K --> O
+    N --> O
 ```
 
-## Dataset Validation
+## Dataset validation
 
-Every training/evaluation run writes a dataset suitability report under `data/`:
+Every training or evaluation run writes a dataset suitability report under `data/`:
 
-- `dataset_summary.csv`
-- `dataset_warnings.csv`
-- `DATASET_REPORT.md`
+* `dataset_summary.csv`
+* `dataset_warnings.csv`
+* `DATASET_REPORT.md`
 
-You can also run it directly:
+You can also run validation directly:
 
 ```bash
 gpu-power-pipeline data-summary --source synthetic --n-samples 600 --outdir dataset_report
 ```
 
-The report checks columns, units, row count, and whether grouped validation is possible. It warns when data is too small, missing key fields, or not ready for session holdout.
+The report checks columns, units, row count, target quality, and whether grouped validation is possible. It warns when data is too small, missing key fields, or not ready for session holdout.
 
 ## Modeling approach
 
-1. **Features:** GPU/system utilization, clocks, temperature, workload labels (when available)
-2. **Preprocessing:** median imputation + `StandardScaler` for numeric; one-hot encoding for categorical
-3. **Models:** Linear Regression, Random Forest, Gradient Boosting (+ optional MLP, XGBoost, LightGBM)
-4. **Diagnostics:** MAE / RMSE / R², residual bias/std/p95, permutation importance, SHAP summaries, worst-error rows
+1. **Features:** GPU/system utilization, clocks, temperature, and workload labels when available
+2. **Preprocessing:** median imputation and `StandardScaler` for numeric features; one-hot encoding for categorical features
+3. **Models:** Linear Regression, Random Forest, Gradient Boosting, plus optional MLP, XGBoost, and LightGBM
+4. **Diagnostics:** MAE, RMSE, R², residual bias/std/p95, permutation importance, SHAP summaries, and worst-error rows
 
 ## Validation strategy
 
 ```mermaid
-flowchart LR
-    A[Raw telemetry CSVs] --> B[Load + clean + leakage filter]
-    B --> C[Feature preprocessing]
-    C --> D[Train regressors]
-    D --> E{Evaluation}
-    E --> F[Primary: grouped blocked CV by session_id]
-    E --> G[Secondary: random / time split diagnostics]
-    F --> H[metrics + plots + ONE_PAGE_REPORT.md]
-    G --> H
-    B --> I[Leakage audit + target quality checks]
-    I --> H
+flowchart TD
+    A[Raw telemetry CSVs] --> B[Load + normalize]
+    B --> C[Schema and unit checks]
+    C --> D[Leakage filtering]
+    D --> E[Feature preprocessing]
+    E --> F[Train regressors]
+
+    F --> G{Evaluation strategy}
+    G --> H[Grouped blocked CV by session_id]
+    G --> I[Time split]
+    G --> J[Random split]
+
+    H --> K[Primary metrics]
+    I --> L[Secondary diagnostics]
+    J --> L
+
+    C --> M[Dataset report]
+    D --> N[Leakage audit]
+    K --> O[ONE_PAGE_REPORT.md]
+    L --> O
+    M --> O
+    N --> O
 ```
 
-| Strategy | Purpose | Trust level |
-|----------|---------|-------------|
-| **Grouped blocked CV** (`session_id`) | Hold out entire trace files/sessions | Primary metric |
-| Time split | Train on earlier timestamps, test on later | Secondary (can still leak within sessions) |
-| Random split | Row-level shuffle | Secondary (optimistic; useful for debugging only) |
+| Strategy                              | Purpose                                                    | Use                                                |
+| ------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------- |
+| **Grouped blocked CV** (`session_id`) | Holds out entire trace files/sessions                      | Primary result for real telemetry                  |
+| Time split                            | Trains on earlier timestamps and tests on later timestamps | Secondary diagnostic                               |
+| Random split                          | Row-level shuffle                                          | Debugging baseline; often optimistic for telemetry |
 
-**Leakage prevention:** drop power/energy/PSU-derived feature names; remove features with \|corr\| ≥ 0.995 to target; never use `timestamp` as a model feature; audit dataset before training.
+**Leakage prevention:** the pipeline drops power, energy, and PSU-derived feature names; removes features with `|corr| >= 0.995` to the target; never uses `timestamp` as a model feature; and audits the dataset before training.
 
-## Results (from local runs, not fabricated)
+## Results from saved run artifacts
 
-Metrics below come from saved artifacts in this repo. **Always prefer grouped blocked CV** when reporting project outcomes.
+Metrics below come from saved local run artifacts in this repo. For real telemetry, prefer grouped blocked CV when reporting results.
 
-### Synthetic data (`outputs_ci_check/`, time split, secondary diagnostic)
+### Synthetic data
 
-| model | MAE | RMSE | R² |
-|-------|----:|-----:|---:|
+`outputs_ci_check/`, time split, secondary diagnostic:
+
+| Model             |  MAE | RMSE |   R² |
+| ----------------- | ---: | ---: | ---: |
 | linear_regression | 5.88 | 7.61 | 0.96 |
 | gradient_boosting | 7.43 | 9.32 | 0.94 |
-| random_forest | 7.77 | 9.71 | 0.94 |
+| random_forest     | 7.77 | 9.71 | 0.94 |
 
-### Public BMC traces (`outputs_grouped_validation/`, grouped blocked CV, primary)
+### Public BMC traces
 
-| model | MAE | RMSE | R² |
-|-------|----:|-----:|---:|
-| random_forest | 27.87 | 33.71 | -9.78 |
+`outputs_grouped_validation/`, grouped blocked CV, primary:
+
+| Model             |    MAE |   RMSE |       R² |
+| ----------------- | -----: | -----: | -------: |
+| random_forest     |  27.87 |  33.71 |    -9.78 |
 | linear_regression | 152.75 | 216.64 | -1573.55 |
 
-Grouped CV on real traces is **hard** (negative R² on held-out sessions). That is expected when sessions differ in scale/noise and feature signal is weak. See `quality/target_summary.csv` and `ONE_PAGE_REPORT.md` for context.
+Grouped CV on real traces is difficult because held-out sessions can differ in scale, noise, and feature signal. Negative R² indicates that the model does not generalize well to those held-out sessions under the current feature set and data volume.
+
+See `quality/target_summary.csv` and `ONE_PAGE_REPORT.md` for additional context.
 
 Reproduce:
 
 ```bash
 python -m gpu_power_pipeline --source synthetic --n-samples 600 --outdir outputs_ci_check
-python -m gpu_power_pipeline --source bmcdata_public --bmcdata-max-files 4 --split-strategy grouped --run-validation --generate-report --outdir outputs_grouped_validation
+
+python -m gpu_power_pipeline --source bmcdata_public --bmcdata-max-files 4 \
+  --split-strategy grouped --run-validation --generate-report \
+  --outdir outputs_grouped_validation
 ```
 
 ## How to run
@@ -133,36 +207,40 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-The CLI has subcommands; running with no subcommand defaults to `run` (backward compatible).
+The CLI has subcommands. Running with no subcommand defaults to `run` for backward compatibility.
 
 ```bash
-gpu-power-pipeline run ...        # or: python -m gpu_power_pipeline run ...
+gpu-power-pipeline run ...
+# or
+python -m gpu_power_pipeline run ...
 ```
 
-| Command | Purpose |
-|---------|---------|
-| `run` | End-to-end experiment: load, train, evaluate, and write artifacts (optionally `--save-model`) |
-| `train` | Fit the best (or `--model-name`) model on all data and save a versioned bundle |
-| `evaluate` | Train + evaluate and write `metrics.csv` only |
-| `data-summary` | Summarize dataset schema, units, and grouped-validation suitability |
-| `optional-status` | Show optional package availability for boosted models and tracking |
-| `predict` | Load a saved model and predict on a CSV/JSON of telemetry |
-| `monitor` | Compare new prediction inputs with training/reference feature distributions |
-| `serve` | Launch the FastAPI inference service |
+| Command           | Purpose                                                                                    |
+| ----------------- | ------------------------------------------------------------------------------------------ |
+| `run`             | End-to-end experiment: load, train, evaluate, and write artifacts; optionally save a model |
+| `train`           | Fit the best model, or a selected `--model-name`, on all data and save a versioned bundle  |
+| `evaluate`        | Train and evaluate, then write `metrics.csv`                                               |
+| `data-summary`    | Summarize dataset schema, units, target quality, and grouped-validation suitability        |
+| `optional-status` | Show optional package availability for boosted models and tracking                         |
+| `predict`         | Load a saved model and predict on a CSV/JSON telemetry input                               |
+| `monitor`         | Compare new prediction inputs with training/reference feature distributions                |
+| `serve`           | Launch the FastAPI inference service                                                       |
 
-**Quick synthetic baseline:**
+### Quick synthetic baseline
 
 ```bash
 gpu-power-pipeline run --source synthetic --n-samples 12000 --run-ablation --outdir outputs
 ```
 
-**Config-driven run (recommended for reproducibility):**
+### Config-driven run
+
+Recommended for reproducibility:
 
 ```bash
 gpu-power-pipeline run --config configs/bmcdata_grouped.yaml
 ```
 
-**Public real data + grouped validation + report + save model:**
+### Public real data with grouped validation
 
 ```bash
 gpu-power-pipeline run --source bmcdata_public --bmcdata-max-files 4 \
@@ -170,23 +248,39 @@ gpu-power-pipeline run --source bmcdata_public --bmcdata-max-files 4 \
   --generate-report --save-model --outdir outputs_run
 ```
 
-**MIT Supercloud public NVIDIA GPU telemetry:**
+### MIT Supercloud public NVIDIA GPU telemetry
 
 ```bash
 mkdir -p data/mit_supercloud
-aws s3 cp s3://mit-supercloud-dataset/2022-hpca/dcgm.csv data/mit_supercloud/ --no-sign-request
-gpu-power-pipeline data-summary --source mit_supercloud --data-path data/mit_supercloud --max-rows 100000
-gpu-power-pipeline run --source mit_supercloud --data-path data/mit_supercloud \
-  --max-rows 100000 --split-strategy grouped --run-validation --outdir outputs_mit_supercloud
+
+aws s3 cp s3://mit-supercloud-dataset/2022-hpca/dcgm.csv \
+  data/mit_supercloud/ --no-sign-request
+
+gpu-power-pipeline data-summary \
+  --source mit_supercloud \
+  --data-path data/mit_supercloud \
+  --max-rows 100000
+
+gpu-power-pipeline run \
+  --source mit_supercloud \
+  --data-path data/mit_supercloud \
+  --max-rows 100000 \
+  --split-strategy grouped \
+  --run-validation \
+  --outdir outputs_mit_supercloud
 ```
 
-You can also use `gpu-power-pipeline run --config configs/mit_supercloud.yaml`.
+You can also use:
+
+```bash
+gpu-power-pipeline run --config configs/mit_supercloud.yaml
+```
 
 The larger `nvidia_smi.csv` file is about 42GB. Start with `dcgm.csv` unless you need the raw 100ms `nvidia-smi` stream.
 
-**Collect your own local NVIDIA GPU telemetry:**
+### Collect local NVIDIA GPU telemetry
 
-On a GPU workstation you are allowed to use, such as a campus lab or makerspace machine:
+On a GPU workstation you are allowed to use, such as a campus lab, makerspace machine, or personal workstation:
 
 ```bash
 gpu-power-pipeline collect-nvidia-smi \
@@ -196,20 +290,24 @@ gpu-power-pipeline collect-nvidia-smi \
   --session-id makerspace_run_001 \
   --workload-type kernel_benchmark
 
-gpu-power-pipeline data-summary --source local_nvidia_smi --data-path data/local_nvidia_smi
+gpu-power-pipeline data-summary \
+  --source local_nvidia_smi \
+  --data-path data/local_nvidia_smi
+
 gpu-power-pipeline run --config configs/local_nvidia_smi.yaml
 ```
 
 Start the collector before your GPU workload and stop using the configured duration. The CSV is local measured telemetry from `nvidia-smi`. It is not committed to the repo and should only be shared if the machine owner or lab policy allows it.
 
-**Train, persist, and predict:**
+### Train, persist, and predict
 
 ```bash
 gpu-power-pipeline train --source synthetic --n-samples 12000 --model-name random_forest
+
 gpu-power-pipeline predict --model-name random_forest --input sample.csv
 ```
 
-**Monitor new prediction inputs:**
+### Monitor new prediction inputs
 
 ```bash
 gpu-power-pipeline monitor \
@@ -218,29 +316,29 @@ gpu-power-pipeline monitor \
   --outdir monitoring_report
 ```
 
-**Tests + lint:**
+### Tests and lint
 
 ```bash
 python -m pytest -q
 ruff check src tests
 ```
 
-**Optional features (off by default):**
+## Optional features
 
-Install extras first:
+Install optional dependencies first:
 
 ```bash
 pip install -r requirements-optional.txt
-gpu-power-pipeline optional-status   # check what is installed
+gpu-power-pipeline optional-status
 ```
 
-| Flag | What it adds |
-|------|--------------|
-| `--include-xgboost` | XGBoost regressor in model comparison |
-| `--include-lightgbm` | LightGBM regressor in model comparison |
-| `--run-shap` | Mean absolute SHAP values for tree models (RF, GB, XGBoost, LightGBM) |
-| `--track-mlflow` | Log params, metrics, and artifacts to local `mlruns/` |
-| `--track-wandb` | Log to W&B (defaults to offline mode) |
+| Flag                 | What it adds                                           |
+| -------------------- | ------------------------------------------------------ |
+| `--include-xgboost`  | Adds XGBoost to model comparison                       |
+| `--include-lightgbm` | Adds LightGBM to model comparison                      |
+| `--run-shap`         | Adds mean absolute SHAP values for tree models         |
+| `--track-mlflow`     | Logs params, metrics, and artifacts to local `mlruns/` |
+| `--track-wandb`      | Logs to W&B, defaulting to offline mode                |
 
 Full example:
 
@@ -250,38 +348,54 @@ gpu-power-pipeline run --source synthetic --n-samples 12000 \
   --track-mlflow --track-wandb --outdir outputs_optional
 ```
 
-Or use the template config: `gpu-power-pipeline run --config configs/optional_boosting_tracking.yaml`.
+Or use the template config:
 
-These extras are optional so the default install stays small. Compare boosted models with the same grouped validation as the built-in models.
+```bash
+gpu-power-pipeline run --config configs/optional_boosting_tracking.yaml
+```
 
-## Model persistence & artifact registry
+These extras are optional so the default install stays lightweight. Compare boosted models with the same validation strategy as the built-in models.
+
+## Model persistence and artifact registry
 
 Trained pipelines are saved with `joblib` plus JSON metadata under a versioned registry:
 
-```
+```text
 artifacts/
 ├── registry.json                 # index: model -> versions, latest pointer
 └── random_forest/
     └── 20260605T012536Z/
-        ├── model.joblib          # fitted sklearn Pipeline (preprocess + model)
+        ├── model.joblib          # fitted sklearn Pipeline
         └── metadata.json         # features, metrics, source, git commit, versions
 ```
 
-`metadata.json` records the exact feature order, numeric/categorical split, training metrics, data source, library versions, git commit, and training feature reference profile. That makes saved models reproducible, serveable, and monitorable without retraining.
+`metadata.json` records:
 
-## Monitoring & Drift Checks
+* feature order
+* numeric and categorical feature split
+* training metrics
+* data source
+* library versions
+* git commit
+* training feature reference profile
 
-The project includes a lightweight monitoring path that stays local and deterministic:
+This makes saved models reproducible, serveable, and monitorable without retraining.
 
-- training runs save `monitoring/reference_profile.json`
-- saved model bundles include the same reference profile in `metadata.json`
-- batch predictions can append JSONL logs with `--log-path`
-- the FastAPI service can log predictions when `GPU_POWER_PREDICTION_LOG` is set
-- `gpu-power-pipeline monitor` writes `drift_report.csv` and `monitoring_report.md`
+## Monitoring and drift checks
 
-The drift check compares new inputs to the training profile. It flags missing columns, bad numeric values, small batches, shifted means, out-of-range values, and unseen categories. This is a lightweight local check, not full production monitoring.
+The project includes a lightweight local monitoring path:
 
-## Inference API (FastAPI)
+* training runs save `monitoring/reference_profile.json`
+* saved model bundles include the same reference profile in `metadata.json`
+* batch predictions can append JSONL logs with `--log-path`
+* the FastAPI service can log predictions when `GPU_POWER_PREDICTION_LOG` is set
+* `gpu-power-pipeline monitor` writes `drift_report.csv` and `monitoring_report.md`
+
+The drift check compares new inputs to the training profile. It flags missing columns, bad numeric values, small batches, shifted means, out-of-range values, and unseen categories.
+
+This is a deterministic local check, not a full production monitoring system.
+
+## Inference API
 
 ```bash
 pip install -r requirements-api.txt
@@ -290,9 +404,13 @@ gpu-power-pipeline serve --model-name random_forest --port 8000
 
 Endpoints:
 
-- `GET /health` - readiness + loaded model identity
-- `GET /model` - metadata for the loaded model
-- `POST /predict` - batch predictions
+| Endpoint        | Purpose                             |
+| --------------- | ----------------------------------- |
+| `GET /health`   | Readiness and loaded model identity |
+| `GET /model`    | Metadata for the loaded model       |
+| `POST /predict` | Batch predictions                   |
+
+Example request:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/predict \
@@ -303,95 +421,124 @@ curl -X POST http://127.0.0.1:8000/predict \
 ## Docker
 
 ```bash
-gpu-power-pipeline train --source synthetic --model-name random_forest   # populate artifacts/
+gpu-power-pipeline train --source synthetic --model-name random_forest
+
 docker build -t gpu-power-api .
+
 docker run -p 8000:8000 gpu-power-api
 ```
 
-The image bundles the trained `artifacts/` and serves the API with a built-in healthcheck.
+The image bundles the trained `artifacts/` directory and serves the API with a built-in healthcheck.
 
 ## Project structure
 
-```
+```text
 gpu-power-modeling/
 ├── src/gpu_power_pipeline/
-│   ├── data.py           # synthetic + public loaders, leakage guards
-│   ├── data_validation.py # dataset summaries, unit checks, suitability warnings
-│   ├── preprocessing.py  # imputation, scaling, encoding
-│   ├── train.py          # models, splits, training loop, final-fit helper
-│   ├── experiments.py    # ablations, sweeps, grouped CV
-│   ├── evaluation.py     # metrics tables
-│   ├── audit.py          # leakage audit
-│   ├── quality.py        # target distribution checks
-│   ├── report.py         # one-page markdown report
-│   ├── monitoring.py     # reference profiles, drift checks, prediction logs
-│   ├── explainability.py # optional SHAP summaries for tree models
-│   ├── tracking.py       # optional MLflow / W&B logging
-│   ├── plotting.py       # diagnostic figures
-│   ├── config.py         # YAML experiment config + defaults
-│   ├── persistence.py    # joblib model bundles + versioned registry
-│   ├── inference.py      # load model, align input, predict
-│   ├── api.py            # FastAPI inference service
-│   └── cli.py            # CLI subcommands
-├── configs/              # YAML experiment configs
-├── tests/                # data, preprocessing, persistence, inference, api, ...
-├── .github/workflows/ci.yml   # lint + tests + train/predict smoke
+│   ├── data.py             # synthetic + public loaders, leakage guards
+│   ├── data_validation.py  # dataset summaries, unit checks, suitability warnings
+│   ├── preprocessing.py    # imputation, scaling, encoding
+│   ├── train.py            # models, splits, training loop, final-fit helper
+│   ├── experiments.py      # ablations, sweeps, grouped CV
+│   ├── evaluation.py       # metrics tables
+│   ├── audit.py            # leakage audit
+│   ├── quality.py          # target distribution checks
+│   ├── report.py           # one-page markdown report
+│   ├── monitoring.py       # reference profiles, drift checks, prediction logs
+│   ├── explainability.py   # optional SHAP summaries for tree models
+│   ├── tracking.py         # optional MLflow / W&B logging
+│   ├── plotting.py         # diagnostic figures
+│   ├── config.py           # YAML experiment config + defaults
+│   ├── persistence.py      # joblib model bundles + versioned registry
+│   ├── inference.py        # load model, align input, predict
+│   ├── api.py              # FastAPI inference service
+│   └── cli.py              # CLI subcommands
+├── configs/                # YAML experiment configs
+├── tests/                  # data, preprocessing, persistence, inference, api, ...
+├── .github/workflows/ci.yml
 ├── Dockerfile
-├── ROADMAP.md            # planned improvements
-├── requirements.txt      # core deps
-├── requirements-api.txt  # serving deps
-└── pyproject.toml        # package, entry point, ruff config
+├── ROADMAP.md
+├── requirements.txt
+├── requirements-api.txt
+└── pyproject.toml
 ```
 
 ## Output artifacts
 
 Each run writes to `--outdir`:
 
-- `metrics.csv`, `run_metadata.json`, `dataset_preview.csv`
-- `data/`, `audit/`, `quality/`, per-model plots and importance CSVs
-- `monitoring/reference_profile.json`
-- per-model SHAP summaries when `--run-shap` is enabled
-- `validation/grouped_blocked_cv_summary.csv` (when `--run-validation`)
-- `ONE_PAGE_REPORT.md` (when `--generate-report`)
+* `metrics.csv`
+* `run_metadata.json`
+* `dataset_preview.csv`
+* `data/`
+* `audit/`
+* `quality/`
+* per-model plots and importance CSVs
+* `monitoring/reference_profile.json`
+* per-model SHAP summaries when `--run-shap` is enabled
+* `validation/grouped_blocked_cv_summary.csv` when `--run-validation` is enabled
+* `ONE_PAGE_REPORT.md` when `--generate-report` is enabled
 
-## Design Notes
+## Design notes
 
-**Why these models?** Linear regression is fast and easy to read. Random Forest and Gradient Boosting handle nonlinear util/temp patterns without GPU training.
+**Why these models?**
+Linear regression is fast and interpretable. Random Forest and Gradient Boosting handle nonlinear utilization, temperature, and clock patterns without GPU training.
 
-**Why optional boosted models?** XGBoost and LightGBM are strong tabular models, but they add heavy dependencies. They stay optional and use the same grouped validation as built-in models.
+**Why optional boosted models?**
+XGBoost and LightGBM are strong tabular models, but they add heavier dependencies. They stay optional and use the same validation pipeline as the built-in models.
 
-**Why grouped validation?** Rows from the same trace are similar. Random splits let the model memorize a session. Holding out whole `session_id` groups tests performance on new captures.
+**Why grouped validation?**
+Rows from the same trace are similar. Random splits can let the model memorize a session. Holding out whole `session_id` groups tests performance on new captures.
 
-**How leakage was avoided:** Drop power/energy feature names and near-perfect target correlations. Splits respect time and session boundaries. An audit flags remaining risks.
+**How leakage is reduced:**
+The pipeline drops power and energy feature names, removes near-perfect target correlations, avoids timestamp-as-feature modeling, and audits the dataset before training.
 
-**What works / what does not:** Synthetic data gives strong metrics. Public BMC sessions are harder; grouped CV can go negative due to distribution shift and noisy labels.
+**What works / what does not:**
+Synthetic data gives strong metrics because the signal is controlled. Public BMC sessions are harder; grouped CV can go negative due to distribution shift, noisy labels, and limited feature coverage.
 
-**Deployment path:** Train on traces, save a versioned model bundle, serve via FastAPI, containerize with Docker. To scale: train per hardware generation, add batch inference, and monitor drift on new sessions.
+**Deployment path:**
+Train on traces, save a versioned model bundle, serve through FastAPI, containerize with Docker, and monitor drift on new inputs. To scale further, train per hardware generation, add batch inference, and expand workload labels.
 
-## Adding Public Trace Data
+## Adding public trace data
 
-To add another public dataset, create a loader that normalizes raw telemetry into the shared schema:
+To add another public dataset, create a loader that normalizes raw telemetry into the shared schema.
 
-- required: `power_watts`
-- strongly recommended: `timestamp`, `session_id`, utilization, clocks, temperature, and workload or source labels when available
-- keep source-specific unit normalization inside the loader
-- keep leakage filtering before training, especially for power, energy, PSU, voltage, and current features
-- register the source in `DATASET_SPECS`
-- run `gpu-power-pipeline data-summary` before training and prefer grouped validation when `session_id` has enough sessions
+Required:
 
-Do not mix synthetic, public real-trace, and derived prediction data in the same headline result. Label each result by data mode and validation strategy.
+* `power_watts`
 
+Strongly recommended:
+
+* `timestamp`
+* `session_id`
+* utilization
+* clocks
+* temperature
+* workload or source labels when available
+
+Guidelines:
+
+* keep source-specific unit normalization inside the loader
+* keep leakage filtering before training, especially for power, energy, PSU, voltage, and current features
+* register the source in `DATASET_SPECS`
+* run `gpu-power-pipeline data-summary` before training
+* prefer grouped validation when `session_id` has enough sessions
+
+Do not mix synthetic data, public real-trace data, and derived prediction outputs in the same headline result. Label each result by data mode and validation strategy.
 
 ## Future work
 
-See [ROADMAP.md](ROADMAP.md). Next steps: pin a demo run bundle under `examples/`, batch/async inference, richer workload labels for public traces, and stronger monitoring on larger real datasets.
+See [ROADMAP.md](ROADMAP.md).
 
-## License
+Next steps:
 
-MIT, see [LICENSE](LICENSE).
+* pin a demo run bundle under `examples/`
+* add batch or async inference
+* improve workload labels for public traces
+* strengthen monitoring on larger real datasets
 
 ## Data attribution
 
-- [arealuser/bmcdata](https://github.com/arealuser/bmcdata) - public BMC telemetry traces
-- [MIT Supercloud HPCA22](https://github.com/boringlee24/HPCA22_SuperCloud) - public NVIDIA GPU telemetry from DCGM / `nvidia-smi`
-- [NREL HPC Eagle GPU metrics](https://data.nrel.gov/submissions/301) - optional manual integration
+* [arealuser/bmcdata](https://github.com/arealuser/bmcdata) — public BMC telemetry traces
+* [MIT Supercloud HPCA22](https://github.com/boringlee24/HPCA22_SuperCloud) — public NVIDIA GPU telemetry from DCGM / `nvidia-smi`
+* [NREL HPC Eagle GPU metrics](https://data.nrel.gov/submissions/301) — optional manual integration
