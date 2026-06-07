@@ -37,10 +37,3 @@ Planned improvements for the GPU Power Modeling project.
 * Improve workload labels for real telemetry
 * Test monitoring on larger datasets
 * Add more real-trace examples when data quality is good enough
-
-## Non-goals
-
-* Proprietary or confidential hardware data
-* Internal architecture assumptions
-* Production-deployment claims without serving benchmarks
-* Fabricated metrics or undocumented datasets
