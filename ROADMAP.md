@@ -1,57 +1,46 @@
 # Roadmap
 
-This file tracks planned improvements for the **GPU Power Modeling** portfolio project.
-It replaces the earlier `PLAN.md`, which described a different CUDA kernel analyzer and no longer matched this repository.
+Planned improvements for the GPU Power Modeling project.
 
-## Completed
+## Done
 
-- Modular Python package (`src/gpu_power_pipeline/`) with data loading, preprocessing, training, and evaluation
-- Public dataset support (`arealuser/bmcdata`, MIT Supercloud HPCA22), local `nvidia-smi` collection, and synthetic telemetry generation
-- Leakage guards (name-based + correlation-based feature filtering, dataset audit)
-- Split strategies: random, time-ordered, and grouped by `session_id`
-- Grouped blocked cross-validation as the primary evaluation metric
-- Experiment tooling: feature ablations, hyperparameter sweeps, split comparison
-- Residual diagnostics, permutation importance, target-quality checks, one-page report generator
-- GitHub Actions CI for `pytest` and a synthetic smoke run
-- Run metadata logging (`run_metadata.json`)
+* Python package with data loading, preprocessing, training, evaluation, and reporting
+* Synthetic telemetry generation
+* Support for BMC, MIT Supercloud, local `nvidia-smi`, and NREL-style CSV inputs
+* Dataset checks and leakage filtering
+* Random, time-based, and grouped validation splits
+* Feature ablations and hyperparameter sweeps
+* Residual diagnostics, feature importance, and target-quality checks
+* One-page report generation
+* Model saving/loading with a versioned artifact layout
+* CLI commands for `run`, `train`, `evaluate`, `predict`, `monitor`, and `serve`
+* YAML experiment configs
+* FastAPI inference service
+* Dockerfile for serving
+* Lightweight drift checks and prediction logs
+* Optional MLflow / W&B tracking
+* Optional XGBoost / LightGBM models and SHAP summaries
+* GitHub Actions CI with tests, linting, and smoke runs
+* MIT license
 
-### Phase 1 - Project clarity and packaging
+## Current focus
 
-- [x] README rewrite: concise summary, architecture diagram, data labels
-- [x] Add `LICENSE` (MIT)
-- [x] Remove stale / conflicting planning docs
-- [x] Initialize git repository and clean ignored build artifacts
+* Keep the README concise and accurate
+* Keep examples reproducible
+* Make the pipeline easy to run from a fresh clone
+* Avoid overstating results from noisy real-world traces
 
-### Phase 2 - ML engineering workflow
+## Future work
 
-- [x] Persist trained models (`joblib`) with versioned artifact layout
-- [x] Separate CLI commands: `train`, `evaluate`, `predict`, `serve`
-- [x] YAML experiment configs instead of hardcoded sweep/feature values
-- [x] Document reproducible train, evaluate, and report workflow
-- [x] Dataset adapter registry and dataset suitability reports
-
-### Phase 3 - Production-style features
-
-- [x] FastAPI inference endpoint (`/health`, `/model`, `/predict`)
-- [x] `Dockerfile` for consistent serving
-- [x] Expand CI: linting (ruff) + train/predict smoke + inference tests
-- [x] Tests for preprocessing, model load/save, inference, evaluation, and API
-- [x] Lightweight monitoring: reference profiles, input drift checks, prediction logs
-- [x] Optional local experiment tracking with MLflow / W&B
-- [x] Optional XGBoost / LightGBM models with SHAP summaries
-
-### Phase 4 - Documentation polish
-
-- [x] README: design notes for models, validation, leakage, limitations, and deployment
-
-## Remaining / future
-
-- [ ] Pin one reproducible run bundle under `examples/`
-- [ ] Batch/async inference
-- [ ] Stronger monitoring on larger real datasets
+* Add one pinned example run under `examples/`
+* Add batch or async inference
+* Improve workload labels for real telemetry
+* Test monitoring on larger datasets
+* Add more real-trace examples when data quality is good enough
 
 ## Non-goals
 
-- Proprietary hardware data, internal architecture assumptions, or confidential workflows
-- Claiming production-grade deployment without measured serving benchmarks
-- Fabricated metrics or datasets in documentation
+* Proprietary or confidential hardware data
+* Internal architecture assumptions
+* Production-deployment claims without serving benchmarks
+* Fabricated metrics or undocumented datasets
