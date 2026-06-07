@@ -462,16 +462,3 @@ ruff check src tests
 ## Future work
 
 See [ROADMAP.md](ROADMAP.md).
-
-Planned improvements:
-
-* example run bundle under `examples/`
-* batch or async inference
-* richer workload labels
-* stronger monitoring on larger datasets
-
-## Data attribution
-
-* [arealuser/bmcdata](https://github.com/arealuser/bmcdata)
-* [MIT Supercloud HPCA22](https://github.com/boringlee24/HPCA22_SuperCloud)
-* [NREL HPC Eagle GPU metrics](https://data.nrel.gov/submissions/301)
