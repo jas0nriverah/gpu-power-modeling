@@ -14,12 +14,6 @@
 
 GPU clusters need practical power estimates from utilization, clocks, temperature, and workload metadata. This repo predicts `power_watts` from public or synthetic telemetry using a validation-first ML workflow.
 
-## Motivation
-
-Telemetry rows from the same trace are often highly similar. Random row splits can produce overly optimistic results because the model sees near-duplicate sessions during training and testing.
-
-This project emphasizes grouped validation, dataset checks, and leakage filtering so results better reflect generalization to new traces.
-
 ## Data modes
 
 | Mode               | Label                            | Source                                                                    | Notes                                                                               |
